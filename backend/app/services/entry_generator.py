@@ -36,91 +36,104 @@ def generate_entry_from_invoice(
     """
     is_general = client and client.tax_type == "general"
     is_special_invoice = invoice.invoice_type and "专用发票" in invoice.invoice_type
-
-    # Determine if this is a deductible VAT invoice
     can_deduct = is_general and is_special_invoice
 
-    # Amounts
     amount = invoice.amount or 0
     tax_amount = invoice.tax_amount or 0
     total_amount = invoice.total_amount or (amount + tax_amount)
 
-    # Subject code
-    subject_code = invoice.suggested_subject_code or "5602.99"  # default: 管理费用-其他
-    subject_name = invoice.suggested_subject_name or "管理费用-其他"
+    # Detect invoice direction from AI response
+    raw = invoice.raw_ai_response or {}
+    is_revenue = raw.get("invoice_direction") == "revenue"
 
     # Build summary
     if not summary:
+        buyer = invoice.buyer_name or "客户"
         vendor = invoice.vendor_name or "对方"
-        items = invoice.item_name or "费用"
-        summary = f"{vendor} {items}"
+        items = invoice.item_name or ("收入" if is_revenue else "费用")
+        if is_revenue:
+            summary = f"向{buyer}销售{items}"
+        else:
+            summary = f"{vendor} {items}"
         if invoice.invoice_number:
             summary += f" 发票#{invoice.invoice_number}"
-
-    # Determine credit account (default: 银行存款)
-    # For most small businesses, we use 银行存款 as the credit side
-    credit_account_code = "1002"
-    credit_account_name = "银行存款"
 
     lines: list[EntryLineCreate] = []
     line_num = 1
 
-    # === Debit side ===
-    # Main expense subject
-    lines.append(EntryLineCreate(
-        line_number=line_num,
-        account_code=subject_code,
-        account_name=subject_name,
-        direction="debit",
-        amount=round(amount, 2),
-        summary_detail=invoice.item_name or "",
-    ))
-    line_num += 1
-
-    # VAT input tax (if deductible)
-    if can_deduct and tax_amount > 0:
+    if is_revenue:
+        # === Revenue Invoice ===
+        # 借: 银行存款 / 应收账款
         lines.append(EntryLineCreate(
-            line_number=line_num,
-            account_code="2221.01.01",
-            account_name="应交税费-应交增值税(进项税额)",
-            direction="debit",
-            amount=round(tax_amount, 2),
-            summary_detail=f"发票#{invoice.invoice_number} 进项税额",
+            line_number=line_num, account_code="1002", account_name="银行存款",
+            direction="debit", amount=round(total_amount, 2),
+            summary_detail=f"销售{invoice.item_name or ''}",
         ))
         line_num += 1
-
-    # === Credit side ===
-    credit_amount = total_amount if can_deduct else (amount + (0 if can_deduct else tax_amount))
-    # If not deducting, tax is included in the expense amount already
-    # Actually, if not deducting, total = amount + tax, all to expense
-    if not can_deduct and tax_amount > 0:
-        # Adjust: the expense line already has 'amount', we need to add tax to it
-        lines[0].amount = round(amount + tax_amount, 2)
-        credit_amount = round(amount + tax_amount, 2)
+        # 贷: 主营业务收入
+        lines.append(EntryLineCreate(
+            line_number=line_num, account_code="5001", account_name="主营业务收入",
+            direction="credit", amount=round(amount, 2),
+            summary_detail=invoice.item_name or "",
+        ))
+        line_num += 1
+        # 贷: 销项税额 (if general taxpayer)
+        if is_general and tax_amount > 0:
+            lines.append(EntryLineCreate(
+                line_number=line_num, account_code="2221.01.02",
+                account_name="应交税费-应交增值税(销项税额)",
+                direction="credit", amount=round(tax_amount, 2),
+                summary_detail=f"发票#{invoice.invoice_number} 销项税额",
+            ))
+            line_num += 1
     else:
-        credit_amount = round(total_amount, 2)
+        # === Expense Invoice ===
+        subject_code = invoice.suggested_subject_code or "5602.99"
+        subject_name = invoice.suggested_subject_name or "管理费用-其他"
 
-    lines.append(EntryLineCreate(
-        line_number=line_num,
-        account_code=credit_account_code,
-        account_name=credit_account_name,
-        direction="credit",
-        amount=round(credit_amount, 2),
-        summary_detail="支付" if voucher_type == "付" else "",
-    ))
+        # 借: 费用科目
+        if not can_deduct and tax_amount > 0:
+            # 小规模或普票: 税额计入费用
+            lines.append(EntryLineCreate(
+                line_number=line_num, account_code=subject_code, account_name=subject_name,
+                direction="debit", amount=round(amount + tax_amount, 2),
+                summary_detail=invoice.item_name or "",
+            ))
+            line_num += 1
+        else:
+            lines.append(EntryLineCreate(
+                line_number=line_num, account_code=subject_code, account_name=subject_name,
+                direction="debit", amount=round(amount, 2),
+                summary_detail=invoice.item_name or "",
+            ))
+            line_num += 1
+            # 借: 进项税额 (if deductible)
+            if can_deduct and tax_amount > 0:
+                lines.append(EntryLineCreate(
+                    line_number=line_num, account_code="2221.01.01",
+                    account_name="应交税费-应交增值税(进项税额)",
+                    direction="debit", amount=round(tax_amount, 2),
+                    summary_detail=f"发票#{invoice.invoice_number} 进项税额",
+                ))
+                line_num += 1
 
-    # Validate: debit total == credit total
+        # 贷: 银行存款
+        lines.append(EntryLineCreate(
+            line_number=line_num, account_code="1002", account_name="银行存款",
+            direction="credit", amount=round(total_amount, 2),
+            summary_detail="支付" if voucher_type == "付" else "",
+        ))
+
+    # Validate balance
     debit_total = sum(l.amount for l in lines if l.direction == "debit")
     credit_total = sum(l.amount for l in lines if l.direction == "credit")
     diff = round(debit_total - credit_total, 2)
     if abs(diff) > 0.01:
-        logger.warning(
-            f"Entry unbalanced: debit={debit_total}, credit={credit_total}, diff={diff}"
-        )
+        logger.warning(f"Entry unbalanced: debit={debit_total}, credit={credit_total}, diff={diff}")
 
     return EntryCreate(
         voucher_date=voucher_date or invoice.invoice_date or date.today(),
-        voucher_type=voucher_type,
+        voucher_type=voucher_type if not is_revenue else "收",
         summary=summary,
         client_id=invoice.client_id or "",
         source_invoice_id=invoice.id,

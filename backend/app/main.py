@@ -91,7 +91,7 @@ app = FastAPI(
 # Routers
 from app.routers import (
     clients, subjects, matching_rules, invoices, entries,
-    export_routes, reports, auth, templates, tax,
+    export_routes, reports, auth, templates, tax, bank,
 )
 app.include_router(auth.router)
 app.include_router(clients.router)
@@ -103,6 +103,7 @@ app.include_router(export_routes.router)
 app.include_router(reports.router)
 app.include_router(templates.router)
 app.include_router(tax.router)
+app.include_router(bank.router)
 
 
 @app.get("/api/v1/health")

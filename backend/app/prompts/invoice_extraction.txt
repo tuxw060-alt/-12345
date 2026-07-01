@@ -45,30 +45,21 @@
 - 如果客户是一般纳税人，且发票是增值税专用发票 → is_deductible: true
 - 如果客户是小规模纳税人，或发票是普通发票 → is_deductible: false
 
-## 返回格式
+## 发票方向判断
 
-请严格按照以下 JSON 格式返回（不要包含任何其他文字）：
+请判断这张发票是费用发票还是收入发票：
+- **费用发票 (expense)**: 客户是购买方/付款方，发票是客户收到的成本/费用票据 → 生成费用类凭证
+- **收入发票 (revenue)**: 客户是销售方/收款方，发票是客户开给别人的 → 生成收入类凭证
+
+判断方法：看"购买方名称"是否是客户公司名称。如果是，则为费用发票。如果"销售方名称"是客户公司名称，则为收入发票。
+
+## 返回格式
 
 ```json
 {
-  "invoice_type": "增值税专用发票 或 增值税普通发票 或 增值税电子普通发票 或 全电发票 或 定额发票 或 其他",
-  "invoice_code": "发票代码",
-  "invoice_number": "发票号码",
-  "invoice_date": "YYYY-MM-DD",
-  "total_amount": 价税合计金额,
-  "amount": 不含税金额,
-  "tax_amount": 税额,
-  "vendor_name": "销售方名称",
-  "vendor_tax_id": "销售方纳税人识别号",
-  "buyer_name": "购买方名称",
-  "buyer_tax_id": "购买方纳税人识别号",
-  "item_name": "货物或应税劳务名称",
-  "remarks": "备注",
-  "suggested_subject_code": "推荐的费用科目代码",
-  "suggested_subject_name": "推荐的费用科目名称",
-  "subject_reason": "推荐科目的原因",
-  "is_deductible": true或false,
-  "confidence": {
+  "invoice_direction": "expense 或 revenue",
+  "invoice_type": "...",
+  ...
     "invoice_type": 0-100,
     "invoice_code": 0-100,
     "invoice_number": 0-100,

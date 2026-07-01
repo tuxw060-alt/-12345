@@ -180,6 +180,7 @@ class AIService:
                 data = {}
 
         return {
+            "invoice_direction": data.get("invoice_direction", "expense"),
             "invoice_type": data.get("invoice_type"),
             "invoice_code": data.get("invoice_code"),
             "invoice_number": data.get("invoice_number"),
@@ -205,6 +206,7 @@ class AIService:
     def _error_result(self, msg: str) -> dict[str, Any]:
         return {
             "error": msg,
+            "invoice_direction": "expense",
             "invoice_type": None, "invoice_code": None, "invoice_number": None,
             "invoice_date": None, "total_amount": None, "amount": None,
             "tax_amount": None, "vendor_name": None, "vendor_tax_id": None,
