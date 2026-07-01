@@ -84,25 +84,107 @@ def _guess_subject(
     return "5602.99", "管理费用-其他", "银行流水支出，待人工确认"
 
 
-def _parse_transaction_rows(rows: list[list[Any]]) -> list[dict[str, Any]]:
-    """Parse common bank export rows by column position and typed values."""
-    transactions: list[dict[str, Any]] = []
-    for row in rows:
-        if len(row) < 4:
+def _detect_columns(rows: list[list[Any]]) -> dict[str, int | None]:
+    """Detect column positions by scanning first 10 rows for headers and typed values."""
+    col_map: dict[str, int | None] = {
+        "date": None, "desc": None, "income": None, "expense": None,
+        "balance": None, "counterparty": None, "account": None,
+    }
+    # First, try header matching
+    header_keywords = {
+        "date": ("日期", "交易时间", "记账日期", "date", "时间"),
+        "desc": ("摘要", "用途", "说明", "交易说明", "desc", "memo", "摘要/用途", "交易摘要"),
+        "income": ("收入", "贷方", "存入", "credit", "收", "收入金额", "贷方金额"),
+        "expense": ("支出", "借方", "取出", "debit", "付", "支出金额", "借方金额"),
+        "balance": ("余额", "balance", "账户余额"),
+        "counterparty": ("对方", "户名", "名称", "counterparty", "对方户名", "对方名称", "交易对方"),
+        "account": ("账号", "对方账号", "卡号", "account"),
+    }
+    # Scan first 10 rows for headers
+    for row in rows[:10]:
+        if not row:
             continue
-        tx_date = _to_date(row[0])
+        for i, cell in enumerate(row):
+            if cell is None:
+                continue
+            text = str(cell).strip().lower().replace(" ", "").replace("\n", "")
+            for key, keywords in header_keywords.items():
+                if col_map[key] is not None:
+                    continue
+                if any(kw in text for kw in keywords):
+                    col_map[key] = i
+        # If all found, break
+        if all(v is not None for v in col_map.values()):
+            break
+
+    # If headers not found, try typed-value detection
+    if col_map["date"] is None or col_map["desc"] is None:
+        for row in rows[:50]:
+            if not row or len(row) < 4:
+                continue
+            for i, cell in enumerate(row):
+                if cell is None:
+                    continue
+                if col_map["date"] is None and _to_date(cell):
+                    col_map["date"] = i
+                elif col_map["expense"] is None and _to_float(cell) and _to_float(cell) > 0:
+                    # Check next column for income
+                    col_map["expense"] = i
+                elif col_map["income"] is None and _to_float(cell) and col_map["expense"] is not None and i != col_map["expense"]:
+                    col_map["income"] = i
+            if col_map["date"] is not None:
+                break
+
+    # Fallback: common Chinese bank format: date, desc, expense, income, balance, ..., counterparty
+    if col_map["date"] is None:
+        col_map["date"] = 0
+    if col_map["desc"] is None:
+        col_map["desc"] = 1
+    if col_map["expense"] is None:
+        col_map["expense"] = 2
+    if col_map["income"] is None:
+        col_map["income"] = 3
+    if col_map["balance"] is None:
+        col_map["balance"] = 4
+
+    return col_map
+
+
+def _parse_transaction_rows(rows: list[list[Any]]) -> list[dict[str, Any]]:
+    """Parse bank export rows with smart column detection."""
+    col_map = _detect_columns(rows)
+    transactions: list[dict[str, Any]] = []
+
+    for row in rows:
+        if len(row) < 3:
+            continue
+
+        def gv(idx: int | None) -> Any:
+            if idx is None or idx >= len(row):
+                return None
+            return row[idx]
+
+        tx_date = _to_date(gv(col_map["date"]))
         if not tx_date:
             continue
 
-        expense = _to_float(row[2] if len(row) > 2 else None)
-        income = _to_float(row[3] if len(row) > 3 else None)
-        if not expense and not income:
+        expense = _to_float(gv(col_map["expense"])) if col_map["expense"] is not None else None
+        income = _to_float(gv(col_map["income"])) if col_map["income"] is not None else None
+
+        # Sometimes income/expense are in same column (signed)
+        if not income and not expense:
+            val = _to_float(gv(col_map.get("expense") or col_map.get("income")))
+            if val is not None:
+                expense = abs(val) if val < 0 else None
+                income = val if val > 0 else None
+        if not income and not expense:
             continue
 
-        balance = _to_float(row[4] if len(row) > 4 else None)
-        account_number = str(row[5]).strip() if len(row) > 5 and row[5] not in (None, "") else None
-        counterparty = str(row[6]).strip() if len(row) > 6 and row[6] not in (None, "") else None
-        summary = str(row[7]).strip() if len(row) > 7 and row[7] not in (None, "") else None
+        summary = str(gv(col_map["desc"])).strip() if col_map["desc"] is not None and gv(col_map["desc"]) not in (None, "") else None
+        counterparty = str(gv(col_map["counterparty"])).strip() if col_map["counterparty"] is not None and gv(col_map["counterparty"]) not in (None, "") else None
+        balance = _to_float(gv(col_map["balance"]))
+        account_number = str(gv(col_map["account"])).strip() if col_map["account"] is not None and gv(col_map["account"]) not in (None, "") else None
+
         code, name, reason = _guess_subject(summary, counterparty, bool(income))
 
         transactions.append({
@@ -116,7 +198,7 @@ def _parse_transaction_rows(rows: list[list[Any]]) -> list[dict[str, Any]]:
             "suggested_subject_code": code,
             "suggested_subject_name": name,
             "subject_reason": reason,
-            "confidence": 72,
+            "confidence": 75,
             "source": "spreadsheet",
         })
     return transactions
