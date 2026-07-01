@@ -231,6 +231,68 @@ def _extract_spreadsheet(path: Path) -> tuple[str, list[dict[str, Any]]]:
     return _rows_to_text(rows), _parse_transaction_rows(rows)
 
 
+def _transactions_to_merged_entries(
+    transactions: list[BankStatementTransaction],
+) -> list[EntryCreate]:
+    """Group transactions by subject code and create merged journal entries."""
+    from collections import defaultdict
+
+    groups: dict[tuple[str, str, str], list[BankStatementTransaction]] = defaultdict(list)
+    for tx in transactions:
+        if tx.entry_id or tx.status != "recognized":
+            continue
+        key = (tx.suggested_subject_code or "5602.99",
+               tx.suggested_subject_name or "管理费用-其他",
+               "expense" if tx.expense_amount else "income")
+        groups[key].append(tx)
+
+    entries: list[EntryCreate] = []
+    for (code, name, direction), txs in groups.items():
+        total = sum(float(t.expense_amount or t.income_amount or 0) for t in txs)
+        if total <= 0:
+            continue
+
+        # Build merged summary: 银行X月手续费（N笔）
+        first_date = min(t.transaction_date for t in txs if t.transaction_date) if txs else date.today()
+        last_date = max(t.transaction_date for t in txs if t.transaction_date) if txs else date.today()
+        month_str = f"{first_date.month}月" if first_date.month == last_date.month else f"{first_date.month}-{last_date.month}月"
+        summary = f"{name}（{month_str}，{len(txs)}笔）"
+
+        bank_code, bank_name = "1002", "银行存款"
+
+        if direction == "expense":
+            lines = [
+                EntryLineCreate(line_number=1, account_code=code, account_name=name,
+                                direction="debit", amount=round(total, 2),
+                                summary_detail=f"银行流水合并{len(txs)}笔"),
+                EntryLineCreate(line_number=2, account_code=bank_code, account_name=bank_name,
+                                direction="credit", amount=round(total, 2),
+                                summary_detail=f"银行流水合并{len(txs)}笔"),
+            ]
+        else:
+            lines = [
+                EntryLineCreate(line_number=1, account_code=bank_code, account_name=bank_name,
+                                direction="debit", amount=round(total, 2),
+                                summary_detail=f"银行流水合并{len(txs)}笔"),
+                EntryLineCreate(line_number=2, account_code=code, account_name=name,
+                                direction="credit", amount=round(total, 2),
+                                summary_detail=f"银行流水合并{len(txs)}笔"),
+            ]
+
+        entries.append(EntryCreate(
+            client_id=txs[0].client_id,
+            voucher_date=last_date or date.today(),
+            voucher_type="记",
+            summary=summary[:500],
+            lines=lines,
+        ))
+        # Mark all as having entry
+        for t in txs:
+            t.entry_id = "merged"
+
+    return entries
+
+
 def _transaction_to_entry(
     tx: BankStatementTransaction,
     voucher_type: str = "记",
@@ -397,15 +459,18 @@ async def upload_and_extract(
     entry_ids: list[str] = []
     upload = await get_upload(db, upload.id)
     if auto_generate:
-        for tx in upload.transactions:
-            if tx.status != "recognized" or tx.entry_id:
-                continue
-            entry_data = _transaction_to_entry(tx)
-            if not entry_data:
-                continue
+        merged = _transactions_to_merged_entries(upload.transactions)
+        for entry_data in merged:
             entry = await create_entry(db, entry_data)
-            tx.entry_id = entry.id
             entry_ids.append(entry.id)
+        # Mark remaining single transactions
+        for tx in upload.transactions:
+            if tx.status == "recognized" and not tx.entry_id:
+                entry_data = _transaction_to_entry(tx)
+                if entry_data:
+                    entry = await create_entry(db, entry_data)
+                    tx.entry_id = entry.id
+                    entry_ids.append(entry.id)
         await db.flush()
         upload = await get_upload(db, upload.id)
 
