@@ -4,6 +4,7 @@ import uuid
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,7 +37,8 @@ async def upload_bank_statement(
         else:
             raise HTTPException(status_code=400, detail=f"不支持的文件格式: .{ext}，支持 CSV、Excel")
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"文件解析失败: {e}")
+        logger.error(f"Bank parse error: {e}")
+        raise HTTPException(status_code=400, detail="文件解析失败，请检查格式是否正确")
 
     if not txns:
         raise HTTPException(status_code=400, detail="未能从文件中解析到交易记录，请检查文件格式")
