@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+venv/
+.env
+*.db
+
+# Node
+node_modules/
+frontend/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Data
+backend/data/uploads/*
+backend/data/exports/*
+backend/data/*.db
+!backend/data/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+work/claude-native/
