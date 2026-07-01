@@ -1,0 +1,292 @@
+import { useRef, useState } from 'react'
+import {
+  Button,
+  Card,
+  message,
+  Popconfirm,
+  Progress,
+  Space,
+  Switch,
+  Table,
+  Tag,
+  Typography,
+} from 'antd'
+import {
+  BankOutlined,
+  DeleteOutlined,
+  FileExcelOutlined,
+  FilePdfOutlined,
+  ThunderboltOutlined,
+  UploadOutlined,
+} from '@ant-design/icons'
+import { useNavigate } from 'react-router-dom'
+import {
+  batchUploadBankStatements,
+  generateBankStatementEntry,
+  type BankStatementUploadResult,
+} from '../api/bankStatements'
+import { useAppStore } from '../hooks/useAppStore'
+import type { BankStatementTransaction } from '../types/invoice'
+
+interface RowData extends BankStatementTransaction {
+  filename: string
+  upload_status: string
+  upload_error: string | null
+}
+
+function money(tx: BankStatementTransaction) {
+  const amount = tx.expense_amount || tx.income_amount
+  if (!amount) return '-'
+  return `¥${Number(amount).toFixed(2)}`
+}
+
+export default function BankStatementUpload() {
+  const [uploading, setUploading] = useState(false)
+  const [autoGenerate, setAutoGenerate] = useState(true)
+  const [results, setResults] = useState<BankStatementUploadResult[]>([])
+  const [progress, setProgress] = useState({ done: 0, total: 0 })
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const { currentClient } = useAppStore()
+  const navigate = useNavigate()
+
+  const rows: RowData[] = results.flatMap((result) => {
+    if (result.upload.transactions.length === 0) {
+      return [{
+        id: result.upload.id,
+        upload_id: result.upload.id,
+        client_id: result.upload.client_id,
+        transaction_date: null,
+        summary: null,
+        counterparty: null,
+        account_number: null,
+        income_amount: null,
+        expense_amount: null,
+        balance: null,
+        suggested_subject_code: null,
+        suggested_subject_name: null,
+        subject_reason: null,
+        confidence: null,
+        status: 'failed',
+        error_msg: result.upload.error_msg,
+        entry_id: null,
+        created_at: result.upload.created_at,
+        filename: result.upload.filename,
+        upload_status: result.upload.status,
+        upload_error: result.upload.error_msg,
+      }]
+    }
+    return result.upload.transactions.map((tx) => ({
+      ...tx,
+      filename: result.upload.filename,
+      upload_status: result.upload.status,
+      upload_error: result.upload.error_msg,
+    }))
+  })
+
+  const doUpload = async (files: FileList | File[]) => {
+    if (!currentClient) {
+      message.warning('请先在顶部选择要记账的客户')
+      return
+    }
+    const fileArray = Array.from(files)
+    if (fileArray.length === 0) return
+
+    setUploading(true)
+    setProgress({ done: 0, total: fileArray.length })
+    const allResults: BankStatementUploadResult[] = []
+
+    for (const file of fileArray) {
+      const batch = await batchUploadBankStatements([file], currentClient.id, autoGenerate)
+      allResults.push(...batch)
+      setProgress({ done: allResults.length, total: fileArray.length })
+    }
+
+    setResults((prev) => [...allResults, ...prev])
+    setUploading(false)
+
+    const txCount = allResults.reduce((sum, r) => sum + r.upload.transactions.length, 0)
+    const entryCount = allResults.reduce((sum, r) => sum + r.entry_ids.length, 0)
+    const failed = allResults.filter((r) => r.upload.status === 'failed').length
+    if (txCount > 0) {
+      message.success(`识别 ${txCount} 条流水${entryCount ? `，生成 ${entryCount} 张凭证` : ''}`)
+    }
+    if (failed > 0) message.error(`${failed} 个文件识别失败`)
+  }
+
+  const handleGenerate = async (row: RowData) => {
+    try {
+      const res = await generateBankStatementEntry(row.id)
+      setResults((prev) => prev.map((result) => ({
+        ...result,
+        upload: {
+          ...result.upload,
+          transactions: result.upload.transactions.map((tx) => (
+            tx.id === row.id ? { ...tx, entry_id: res.entry_id } : tx
+          )),
+        },
+      })))
+      navigate(`/entries/${res.entry_id}/edit`)
+    } catch {
+      message.error('生成凭证失败')
+    }
+  }
+
+  const handleRemoveUpload = (uploadId: string) => {
+    setResults((prev) => prev.filter((result) => result.upload.id !== uploadId))
+  }
+
+  const columns = [
+    {
+      title: '文件',
+      dataIndex: 'filename',
+      width: 260,
+      render: (name: string) => (
+        <Space>
+          {name?.toLowerCase().endsWith('.pdf') ? <FilePdfOutlined /> : <FileExcelOutlined />}
+          <span>{name}</span>
+        </Space>
+      ),
+    },
+    {
+      title: '识别状态',
+      key: 'status',
+      width: 180,
+      render: (_: any, row: RowData) => (
+        <Space>
+          <Tag color={row.status === 'recognized' ? 'green' : 'red'}>
+            {row.status === 'recognized' ? '已识别' : '失败'}
+          </Tag>
+          {row.confidence != null && (
+            <>
+              <Progress
+                percent={Math.round(row.confidence)}
+                size="small"
+                showInfo={false}
+                style={{ width: 56 }}
+                strokeColor={row.confidence >= 90 ? '#52c41a' : '#faad14'}
+              />
+              <span>{Math.round(row.confidence)}%</span>
+            </>
+          )}
+        </Space>
+      ),
+    },
+    {
+      title: '日期',
+      dataIndex: 'transaction_date',
+      width: 120,
+      render: (v: string | null) => v || '-',
+    },
+    {
+      title: '金额',
+      width: 120,
+      render: (_: any, row: RowData) => money(row),
+    },
+    {
+      title: '对方/摘要',
+      key: 'summary',
+      ellipsis: true,
+      render: (_: any, row: RowData) => row.counterparty || row.summary || row.error_msg || '-',
+    },
+    {
+      title: '推荐科目',
+      dataIndex: 'suggested_subject_name',
+      width: 190,
+      render: (v: string | null) => v ? <Tag color="blue">{v}</Tag> : '-',
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 150,
+      render: (_: any, row: RowData) => (
+        <Space size={0}>
+          {row.entry_id ? (
+            <Button type="link" size="small" onClick={() => navigate(`/entries/${row.entry_id}/edit`)}>
+              凭证
+            </Button>
+          ) : row.status === 'recognized' ? (
+            <Button
+              type="link"
+              size="small"
+              icon={<ThunderboltOutlined />}
+              onClick={() => handleGenerate(row)}
+            >
+              凭证
+            </Button>
+          ) : null}
+          <Popconfirm title="从当前列表移除？" onConfirm={() => handleRemoveUpload(row.upload_id)}>
+            <Button type="link" size="small" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
+  return (
+    <div>
+      <Space style={{ marginBottom: 16, width: '100%', justifyContent: 'space-between' }}>
+        <Typography.Title level={4} style={{ margin: 0 }}>上传银行流水</Typography.Title>
+        <Space>
+          <Typography.Text>自动生成凭证</Typography.Text>
+          <Switch checked={autoGenerate} onChange={setAutoGenerate} />
+          <Button
+            type="primary"
+            icon={<UploadOutlined />}
+            loading={uploading}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            选择文件
+          </Button>
+        </Space>
+      </Space>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept=".csv,.xlsx,.xlsm,.pdf,image/*"
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          if (e.target.files) {
+            doUpload(e.target.files)
+            e.target.value = ''
+          }
+        }}
+      />
+
+      <Card style={{ marginBottom: 16 }}>
+        <div
+          onClick={() => !uploading && fileInputRef.current?.click()}
+          style={{
+            border: '2px dashed #d9d9d9',
+            borderRadius: 8,
+            padding: 40,
+            textAlign: 'center',
+            cursor: uploading ? 'not-allowed' : 'pointer',
+            background: uploading ? '#f5f5f5' : '#fafafa',
+          }}
+        >
+          <BankOutlined style={{ fontSize: 48, color: '#1677ff' }} />
+          <p style={{ fontSize: 16, margin: '16px 0 4px' }}>
+            {uploading ? `正在识别流水 (${progress.done}/${progress.total})` : '点击选择银行流水文件（支持多选）'}
+          </p>
+          <p style={{ color: '#888', margin: 0 }}>
+            支持 CSV、XLSX、PDF、图片。表格流水优先解析，PDF/图片会走 OCR + AI 识别。
+          </p>
+          {uploading && progress.total > 0 && (
+            <Progress
+              percent={Math.round((progress.done / progress.total) * 100)}
+              style={{ maxWidth: 400, margin: '16px auto 0' }}
+            />
+          )}
+        </div>
+      </Card>
+
+      {rows.length > 0 && (
+        <Card title={`上传记录 (${rows.length})`}>
+          <Table columns={columns} dataSource={rows} rowKey="id" size="small" pagination={{ pageSize: 20 }} />
+        </Card>
+      )}
+    </div>
+  )
+}

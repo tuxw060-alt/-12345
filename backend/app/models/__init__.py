@@ -4,6 +4,7 @@ from app.models.account_subject import AccountSubject
 from app.models.matching_rule import MatchingRule
 from app.models.journal_entry import JournalEntry, JournalEntryLine
 from app.models.entry_template import EntryTemplate, EntryTemplateLine
+from app.models.bank_statement import BankStatementUpload, BankStatementTransaction
 
 __all__ = [
     "Client",
@@ -14,4 +15,6 @@ __all__ = [
     "JournalEntryLine",
     "EntryTemplate",
     "EntryTemplateLine",
+    "BankStatementUpload",
+    "BankStatementTransaction",
 ]

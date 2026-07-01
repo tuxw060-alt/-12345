@@ -101,6 +101,37 @@ export interface JournalEntry {
   updated_at: string | null
 }
 
+export interface BankStatementTransaction {
+  id: string
+  upload_id: string
+  client_id: string
+  transaction_date: string | null
+  summary: string | null
+  counterparty: string | null
+  account_number: string | null
+  income_amount: number | null
+  expense_amount: number | null
+  balance: number | null
+  suggested_subject_code: string | null
+  suggested_subject_name: string | null
+  subject_reason: string | null
+  confidence: number | null
+  status: 'recognized' | 'failed'
+  error_msg: string | null
+  entry_id: string | null
+  created_at: string
+}
+
+export interface BankStatementUpload {
+  id: string
+  client_id: string
+  filename: string
+  status: 'pending' | 'done' | 'failed'
+  error_msg: string | null
+  created_at: string
+  transactions: BankStatementTransaction[]
+}
+
 // API list responses
 export interface ListResponse<T> {
   items: T[]

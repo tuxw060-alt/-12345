@@ -91,13 +91,14 @@ app = FastAPI(
 # Routers
 from app.routers import (
     clients, subjects, matching_rules, invoices, entries,
-    export_routes, reports, auth, templates, tax, bank,
+    export_routes, reports, auth, templates, tax, bank, bank_statements,
 )
 app.include_router(auth.router)
 app.include_router(clients.router)
 app.include_router(subjects.router)
 app.include_router(matching_rules.router)
 app.include_router(invoices.router)
+app.include_router(bank_statements.router)
 app.include_router(entries.router)
 app.include_router(export_routes.router)
 app.include_router(reports.router)

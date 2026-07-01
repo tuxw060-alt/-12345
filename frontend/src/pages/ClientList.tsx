@@ -5,6 +5,7 @@ import {
 } from 'antd'
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
 import { listClients, createClient, updateClient, deleteClient } from '../api/clients'
+import { useAppStore } from '../hooks/useAppStore'
 import type { Client } from '../types/invoice'
 
 export default function ClientList() {
@@ -13,6 +14,7 @@ export default function ClientList() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<Client | null>(null)
   const [form] = Form.useForm()
+  const { currentClient, setCurrentClient, requestClientRefresh } = useAppStore()
 
   const fetchClients = () => {
     setLoading(true)
@@ -45,6 +47,7 @@ export default function ClientList() {
       }
       setModalOpen(false)
       fetchClients()
+      requestClientRefresh()
     } catch (err: any) {
       message.error(`操作失败: ${err.message}`)
     }
@@ -54,7 +57,11 @@ export default function ClientList() {
     try {
       await deleteClient(id)
       message.success('已停用客户')
+      if (currentClient?.id === id) {
+        setCurrentClient(null)
+      }
       fetchClients()
+      requestClientRefresh()
     } catch (err: any) {
       message.error(`删除失败: ${err.message}`)
     }

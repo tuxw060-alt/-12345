@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { Avatar, Grid, Layout, Menu, Select, Space, Typography, theme } from 'antd'
 import {
@@ -21,6 +21,7 @@ const { Header, Sider, Content } = Layout
 const menuItems = [
   { key: '/', icon: <AppstoreOutlined />, label: '工作台' },
   { key: '/invoices/upload', icon: <UploadOutlined />, label: '上传发票' },
+  { key: '/bank-statements/upload', icon: <BankOutlined />, label: '银行流水' },
   { key: '/entries', icon: <FileTextOutlined />, label: '记账凭证' },
   { key: '/subjects', icon: <BookOutlined />, label: '科目规则' },
   { key: '/clients', icon: <TeamOutlined />, label: '客户管理' },
@@ -32,18 +33,29 @@ const menuItems = [
 export default function AppLayout() {
   const [collapsed, setCollapsed] = useState(false)
   const [clients, setClients] = useState<Client[]>([])
-  const { currentClient, setCurrentClient } = useAppStore()
+  const { currentClient, setCurrentClient, clientRefreshKey } = useAppStore()
   const navigate = useNavigate()
   const location = useLocation()
   const { token } = theme.useToken()
   const screens = Grid.useBreakpoint()
   const isMobile = !screens.md
 
-  useEffect(() => {
-    listClients({ is_active: true }).then((res) => setClients(res.items))
-  }, [])
+  const refreshClientOptions = useCallback(() => {
+    listClients({ is_active: true }).then((res) => {
+      setClients(res.items)
+      if (currentClient && !res.items.some((client) => client.id === currentClient.id)) {
+        setCurrentClient(null)
+      }
+    })
+  }, [currentClient, setCurrentClient])
 
-  const selectedKey = '/' + location.pathname.split('/')[1]
+  useEffect(() => {
+    refreshClientOptions()
+  }, [clientRefreshKey, refreshClientOptions])
+
+  const selectedKey = location.pathname.startsWith('/bank-statements')
+    ? '/bank-statements/upload'
+    : '/' + location.pathname.split('/')[1]
   const currentMenu = menuItems.find((m) => m.key === selectedKey) || menuItems[0]
 
   return (
@@ -102,6 +114,9 @@ export default function AppLayout() {
               placeholder="选择客户"
               style={{ width: isMobile ? 190 : 280 }}
               value={currentClient?.id || undefined}
+              onOpenChange={(open) => {
+                if (open) refreshClientOptions()
+              }}
               onChange={(val) => {
                 const client = clients.find((x) => x.id === val) || null
                 setCurrentClient(client)

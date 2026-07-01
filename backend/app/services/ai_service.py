@@ -21,6 +21,8 @@ from app.config import settings
 # Load the system prompt
 PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "invoice_extraction.txt"
 SYSTEM_PROMPT = PROMPT_PATH.read_text(encoding="utf-8") if PROMPT_PATH.exists() else ""
+BANK_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "bank_statement_extraction.txt"
+BANK_SYSTEM_PROMPT = BANK_PROMPT_PATH.read_text(encoding="utf-8") if BANK_PROMPT_PATH.exists() else ""
 
 
 def pdf_to_image(pdf_path: Path, output_dir: Path | None = None, dpi: int = 200) -> Path:
@@ -46,13 +48,12 @@ def pdf_to_image(pdf_path: Path, output_dir: Path | None = None, dpi: int = 200)
 
 
 def extract_text_from_pdf(pdf_path: Path) -> str:
-    """Extract all text from the first page of a PDF using PyMuPDF."""
+    """Extract text from a PDF using PyMuPDF."""
     doc = fitz.open(str(pdf_path))
     try:
         text = ""
         for page in doc:
             text += page.get_text("text") + "\n"
-            break  # First page only for invoices
         # Clean up whitespace
         text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
         logger.info(f"Extracted {len(text)} chars from PDF")
@@ -215,6 +216,60 @@ class AIService:
             "suggested_subject_name": None, "subject_reason": None,
             "is_deductible": False, "confidence": {}, "warnings": [],
         }
+
+    async def extract_bank_statement(self, statement_text: str) -> dict[str, Any]:
+        """Extract bank statement transactions and subject suggestions."""
+        if not statement_text or len(statement_text.strip()) < 10:
+            return {"error": "流水内容为空或文本过短，无法识别"}
+
+        user_prompt = (
+            "请从以下银行流水内容中提取交易明细，并推荐会计科目。\n\n"
+            f"=== 银行流水内容 ===\n{statement_text[:24000]}\n=== 内容结束 ==="
+        )
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": BANK_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=4096,
+                temperature=0.1,
+            )
+            result_text = response.choices[0].message.content or ""
+            data = self._parse_json_object(result_text)
+            transactions = data.get("transactions")
+            if not isinstance(transactions, list):
+                return {"error": "AI未返回有效的流水明细", "raw": data}
+            return data
+        except Exception as e:
+            logger.error(f"Bank statement AI extraction failed: {e}")
+            return {"error": f"银行流水AI识别失败: {e}"}
+
+    def _parse_json_object(self, raw_text: str) -> dict[str, Any]:
+        """Extract a JSON object from an AI response."""
+        text = raw_text.strip()
+        if "```json" in text:
+            start = text.index("```json") + 7
+            end = text.index("```", start) if "```" in text[start:] else len(text)
+            text = text[start:end].strip()
+        elif "```" in text:
+            start = text.index("```") + 3
+            end = text.index("```", start) if "```" in text[start:] else len(text)
+            text = text[start:end].strip()
+
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            import re
+            match = re.search(r"\{[\s\S]*\}", text)
+            if match:
+                try:
+                    return json.loads(match.group())
+                except json.JSONDecodeError:
+                    pass
+        return {}
 
     @staticmethod
     def _to_float(value: Any) -> float | None:

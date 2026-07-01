@@ -28,3 +28,4 @@ backend/data/*.db
 .DS_Store
 Thumbs.db
 work/claude-native/
+work/logs/*-dev.log

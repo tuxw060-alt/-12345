@@ -8,6 +8,7 @@ import AppLayout from './components/Layout/AppLayout'
 import Dashboard from './pages/Dashboard'
 import InvoiceUpload from './pages/InvoiceUpload'
 import InvoiceReview from './pages/InvoiceReview'
+import BankStatementUpload from './pages/BankStatementUpload'
 import EntryList from './pages/EntryList'
 import EntryEditor from './pages/EntryEditor'
 import ClientList from './pages/ClientList'
@@ -52,6 +53,7 @@ export default function App() {
               <Route index element={<Dashboard />} />
               <Route path="invoices/upload" element={<InvoiceUpload />} />
               <Route path="invoices/:id/review" element={<InvoiceReview />} />
+              <Route path="bank-statements/upload" element={<BankStatementUpload />} />
               <Route path="entries" element={<EntryList />} />
               <Route path="entries/:id/edit" element={<EntryEditor />} />
               <Route path="clients" element={<ClientList />} />
