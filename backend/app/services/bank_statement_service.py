@@ -64,6 +64,18 @@ def _rows_to_text(rows: list[list[Any]]) -> str:
     return "\n".join("\t".join("" if c is None else str(c) for c in row) for row in rows)
 
 
+def _clean_party_name(counterparty: str | None) -> str:
+    party = (counterparty or "").strip()
+    if not party:
+        return ""
+    if re.fullmatch(r"[\d,.\-+￥¥\s:]+", party):
+        return ""
+    bank_noise = ("银行", "银联", "财付通", "支付宝", "微信支付")
+    if any(word in party for word in bank_noise) and len(party) <= 12:
+        return ""
+    return party
+
+
 def _extract_ods_rows(path: Path) -> list[list[Any]]:
     namespaces = {
         "office": "urn:oasis:names:tc:opendocument:xmlns:office:1.0",
@@ -121,15 +133,20 @@ def _guess_subject(
         "借入", "借支", "备用金", "拆借",
     )
     if any(keyword in text for keyword in liability_keywords):
-        party = (counterparty or "").strip()
-        if re.fullmatch(r"[\d,.\-+￥¥\s]+", party):
-            party = ""
+        party = _clean_party_name(counterparty)
         subject_name = f"其他应付款_{party}" if party else "其他应付款"
         return "2241", subject_name, "借款/往来款走负债科目：借方减少，贷方增加"
 
     loan_keywords = ("贷款", "银行借款", "借款本金")
     if any(keyword in text for keyword in loan_keywords):
         return "2001", "短期借款", "银行贷款负债：借方减少，贷方增加"
+
+    if is_income:
+        if any(keyword in text for keyword in ("利息", "结息")):
+            return "5603.03", "财务费用-利息收入", "利息收入"
+        party = _clean_party_name(counterparty)
+        subject_name = f"应收账款_{party}" if party else "应收账款"
+        return "1122", subject_name, "银行收款默认冲应收账款，需人工复核"
 
     rules = [
         (("手续费", "账户管理", "网银", "电子汇划费", "短信费"), "5603.02", "财务费用-手续费", "银行费用"),
@@ -149,9 +166,9 @@ def _guess_subject(
     for keywords, code, name, reason in rules:
         if any(keyword in text for keyword in keywords):
             return code, name, reason
-    if is_income:
-        return "5001", "主营业务收入", "银行流水收入，待人工确认"
-    return "5602.99", "管理费用-其他", "银行流水支出，待人工确认"
+    party = _clean_party_name(counterparty)
+    subject_name = f"应付账款_{party}" if party else "应付账款"
+    return "2202", subject_name, "银行付款默认冲应付账款，需人工复核"
 
 
 def _detect_columns(rows: list[list[Any]]) -> dict[str, int | None]:
@@ -345,9 +362,15 @@ def _group_transactions_for_entries(
     for tx in transactions:
         if tx.entry_id or tx.status != "recognized":
             continue
-        key = (tx.suggested_subject_code or "5602.99",
-               tx.suggested_subject_name or "管理费用-其他",
-               "expense" if tx.expense_amount else "income")
+        code = tx.suggested_subject_code or ("1122" if tx.income_amount else "2202")
+        name = tx.suggested_subject_name or ("应收账款" if tx.income_amount else "应付账款")
+        direction = "expense" if tx.expense_amount else "income"
+        if direction == "income" and code.startswith("1122"):
+            key = ("__bank_receipt__", "银行收款", direction)
+        elif direction == "expense" and code.startswith("2202"):
+            key = ("__bank_payment__", "银行付款", direction)
+        else:
+            key = (code, name, direction)
         groups[key].append(tx)
 
     grouped_entries: list[tuple[EntryCreate, list[BankStatementTransaction]]] = []
@@ -357,30 +380,64 @@ def _group_transactions_for_entries(
             continue
 
         # Build merged summary: 银行X月手续费（N笔）
-        first_date = min(t.transaction_date for t in txs if t.transaction_date) if txs else date.today()
-        last_date = max(t.transaction_date for t in txs if t.transaction_date) if txs else date.today()
+        tx_dates = [_to_date(t.transaction_date) for t in txs if t.transaction_date]
+        tx_dates = [d for d in tx_dates if d]
+        first_date = min(tx_dates) if tx_dates else date.today()
+        last_date = max(tx_dates) if tx_dates else date.today()
         month_str = f"{first_date.month}月" if first_date.month == last_date.month else f"{first_date.month}-{last_date.month}月"
-        summary = f"{name}（{month_str}，{len(txs)}笔）"
+        bank_code, bank_name = "100201", "银行存款_基本户"
 
-        bank_code, bank_name = "1002", "银行存款"
-
-        if direction == "expense":
-            lines = [
-                EntryLineCreate(line_number=1, account_code=code, account_name=name,
-                                direction="debit", amount=round(total, 2),
-                                summary_detail=f"银行流水合并{len(txs)}笔"),
-                EntryLineCreate(line_number=2, account_code=bank_code, account_name=bank_name,
-                                direction="credit", amount=round(total, 2),
-                                summary_detail=f"银行流水合并{len(txs)}笔"),
-            ]
-        else:
+        if code == "__bank_receipt__":
+            summary = "银行收款"
+            counterparty_totals: dict[tuple[str, str], float] = defaultdict(float)
+            for tx in txs:
+                line_code = tx.suggested_subject_code or "1122"
+                line_name = tx.suggested_subject_name or "应收账款"
+                counterparty_totals[(line_code, line_name)] += float(tx.income_amount or 0)
             lines = [
                 EntryLineCreate(line_number=1, account_code=bank_code, account_name=bank_name,
                                 direction="debit", amount=round(total, 2),
-                                summary_detail=f"银行流水合并{len(txs)}笔"),
+                                summary_detail=summary),
+            ]
+            for index, ((line_code, line_name), amount) in enumerate(counterparty_totals.items(), start=2):
+                lines.append(EntryLineCreate(line_number=index, account_code=line_code, account_name=line_name,
+                                             direction="credit", amount=round(amount, 2),
+                                             summary_detail=summary))
+        elif code == "__bank_payment__":
+            summary = "银行付款"
+            counterparty_totals: dict[tuple[str, str], float] = defaultdict(float)
+            for tx in txs:
+                line_code = tx.suggested_subject_code or "2202"
+                line_name = tx.suggested_subject_name or "应付账款"
+                counterparty_totals[(line_code, line_name)] += float(tx.expense_amount or 0)
+            lines = [
+                EntryLineCreate(line_number=index, account_code=line_code, account_name=line_name,
+                                direction="debit", amount=round(amount, 2),
+                                summary_detail=summary)
+                for index, ((line_code, line_name), amount) in enumerate(counterparty_totals.items(), start=1)
+            ]
+            lines.append(EntryLineCreate(line_number=len(lines) + 1, account_code=bank_code, account_name=bank_name,
+                                         direction="credit", amount=round(total, 2),
+                                         summary_detail=summary))
+        elif direction == "expense":
+            summary = "手续费" if code.startswith("5603.02") else f"{name}（{month_str}，{len(txs)}笔）"
+            lines = [
+                EntryLineCreate(line_number=1, account_code=code, account_name=name,
+                                direction="debit", amount=round(total, 2),
+                                summary_detail=summary),
+                EntryLineCreate(line_number=2, account_code=bank_code, account_name=bank_name,
+                                direction="credit", amount=round(total, 2),
+                                summary_detail=summary),
+            ]
+        else:
+            summary = "结息" if code.startswith("5603.03") else f"{name}（{month_str}，{len(txs)}笔）"
+            lines = [
+                EntryLineCreate(line_number=1, account_code=bank_code, account_name=bank_name,
+                                direction="debit", amount=round(total, 2),
+                                summary_detail=summary),
                 EntryLineCreate(line_number=2, account_code=code, account_name=name,
                                 direction="credit", amount=round(total, 2),
-                                summary_detail=f"银行流水合并{len(txs)}笔"),
+                                summary_detail=summary),
             ]
 
         grouped_entries.append((
@@ -405,13 +462,21 @@ def _transaction_to_entry(
     if amount <= 0:
         return None
 
-    bank_code = "1002"
-    bank_name = "银行存款"
-    subject_code = tx.suggested_subject_code or "5602.99"
-    subject_name = tx.suggested_subject_name or "管理费用-其他"
-    summary = tx.summary or tx.counterparty or "银行流水"
-    if tx.counterparty and tx.counterparty not in summary:
-        summary = f"{summary} - {tx.counterparty}"
+    bank_code = "100201"
+    bank_name = "银行存款_基本户"
+    if tx.income_amount:
+        subject_code = tx.suggested_subject_code or "1122"
+        subject_name = tx.suggested_subject_name or "应收账款"
+        summary = "银行收款" if subject_code.startswith("1122") else (tx.summary or "银行收款")
+    else:
+        subject_code = tx.suggested_subject_code or "2202"
+        subject_name = tx.suggested_subject_name or "应付账款"
+        if subject_code.startswith("2202"):
+            summary = "银行付款"
+        elif subject_code.startswith("5603.02"):
+            summary = "手续费"
+        else:
+            summary = tx.summary or "银行付款"
 
     if tx.expense_amount:
         lines = [
@@ -421,7 +486,7 @@ def _transaction_to_entry(
                 account_name=subject_name,
                 direction="debit",
                 amount=round(amount, 2),
-                summary_detail=tx.summary,
+                summary_detail=summary,
             ),
             EntryLineCreate(
                 line_number=2,
@@ -429,7 +494,7 @@ def _transaction_to_entry(
                 account_name=bank_name,
                 direction="credit",
                 amount=round(amount, 2),
-                summary_detail=tx.counterparty,
+                summary_detail=summary,
             ),
         ]
     else:
@@ -440,7 +505,7 @@ def _transaction_to_entry(
                 account_name=bank_name,
                 direction="debit",
                 amount=round(amount, 2),
-                summary_detail=tx.counterparty,
+                summary_detail=summary,
             ),
             EntryLineCreate(
                 line_number=2,
@@ -448,7 +513,7 @@ def _transaction_to_entry(
                 account_name=subject_name,
                 direction="credit",
                 amount=round(amount, 2),
-                summary_detail=tx.summary,
+                summary_detail=summary,
             ),
         ]
 
