@@ -1,0 +1,12 @@
+#!/bin/sh
+# Auto-push the current branch after a successful local commit.
+# Uses the configured origin remote; credentials must come from Git's credential manager.
+
+branch="$(git branch --show-current)"
+
+if [ -z "$branch" ]; then
+  echo "post-commit: detached HEAD, skip auto-push"
+  exit 0
+fi
+
+git push origin "$branch"
