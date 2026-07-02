@@ -68,6 +68,11 @@ export async function batchConfirm(ids: string[]): Promise<{ confirmed: number; 
   return res.data
 }
 
+export async function batchDeleteEntries(ids: string[]): Promise<{ deleted: number; failed: any[] }> {
+  const res = await api.post('/entries/batch-delete', ids)
+  return res.data
+}
+
 export async function deleteEntry(id: string): Promise<void> {
   await api.delete(`/entries/${id}`)
 }

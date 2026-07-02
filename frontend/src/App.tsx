@@ -15,7 +15,6 @@ import ClientList from './pages/ClientList'
 import SubjectManager from './pages/SubjectManager'
 import ExportPage from './pages/ExportPage'
 import Reports from './pages/Reports'
-import BankImport from './pages/BankImport'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -60,7 +59,6 @@ export default function App() {
               <Route path="subjects" element={<SubjectManager />} />
               <Route path="export" element={<ExportPage />} />
               <Route path="reports" element={<Reports />} />
-              <Route path="bank" element={<BankImport />} />
             </Route>
           </Routes>
         </BrowserRouter>

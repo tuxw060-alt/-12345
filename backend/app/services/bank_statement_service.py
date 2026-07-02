@@ -61,6 +61,22 @@ def _guess_subject(
     is_income: bool,
 ) -> tuple[str, str, str]:
     text = f"{summary or ''} {counterparty or ''}".lower()
+
+    liability_keywords = (
+        "借款", "还款", "往来款", "往来", "代垫", "垫付", "暂借", "归还",
+        "借入", "借支", "备用金", "拆借",
+    )
+    if any(keyword in text for keyword in liability_keywords):
+        party = (counterparty or "").strip()
+        if re.fullmatch(r"[\d,.\-+￥¥\s]+", party):
+            party = ""
+        subject_name = f"其他应付款_{party}" if party else "其他应付款"
+        return "2241", subject_name, "借款/往来款走负债科目：借方减少，贷方增加"
+
+    loan_keywords = ("贷款", "银行借款", "借款本金")
+    if any(keyword in text for keyword in loan_keywords):
+        return "2001", "短期借款", "银行贷款负债：借方减少，贷方增加"
+
     rules = [
         (("手续费", "账户管理", "网银", "电子汇划费", "短信费"), "5603.02", "财务费用-手续费", "银行费用"),
         (("利息",), "5603.03" if is_income else "5603.01", "财务费用-利息收入" if is_income else "财务费用-利息支出", "利息收支"),
@@ -198,7 +214,7 @@ def _parse_transaction_rows(rows: list[list[Any]]) -> list[dict[str, Any]]:
             "suggested_subject_code": code,
             "suggested_subject_name": name,
             "subject_reason": reason,
-            "confidence": 75,
+            "confidence": 100,
             "source": "spreadsheet",
         })
     return transactions
@@ -231,10 +247,10 @@ def _extract_spreadsheet(path: Path) -> tuple[str, list[dict[str, Any]]]:
     return _rows_to_text(rows), _parse_transaction_rows(rows)
 
 
-def _transactions_to_merged_entries(
+def _group_transactions_for_entries(
     transactions: list[BankStatementTransaction],
-) -> list[EntryCreate]:
-    """Group transactions by subject code and create merged journal entries."""
+) -> list[tuple[EntryCreate, list[BankStatementTransaction]]]:
+    """Group transactions by subject code and return entry payloads with source rows."""
     from collections import defaultdict
 
     groups: dict[tuple[str, str, str], list[BankStatementTransaction]] = defaultdict(list)
@@ -246,7 +262,7 @@ def _transactions_to_merged_entries(
                "expense" if tx.expense_amount else "income")
         groups[key].append(tx)
 
-    entries: list[EntryCreate] = []
+    grouped_entries: list[tuple[EntryCreate, list[BankStatementTransaction]]] = []
     for (code, name, direction), txs in groups.items():
         total = sum(float(t.expense_amount or t.income_amount or 0) for t in txs)
         if total <= 0:
@@ -279,18 +295,18 @@ def _transactions_to_merged_entries(
                                 summary_detail=f"银行流水合并{len(txs)}笔"),
             ]
 
-        entries.append(EntryCreate(
-            client_id=txs[0].client_id,
-            voucher_date=last_date or date.today(),
-            voucher_type="记",
-            summary=summary[:500],
-            lines=lines,
+        grouped_entries.append((
+            EntryCreate(
+                client_id=txs[0].client_id,
+                voucher_date=last_date or date.today(),
+                voucher_type="记",
+                summary=summary[:500],
+                lines=lines,
+            ),
+            txs,
         ))
-        # Mark all as having entry
-        for t in txs:
-            t.entry_id = "merged"
 
-    return entries
+    return grouped_entries
 
 
 def _transaction_to_entry(
@@ -459,11 +475,13 @@ async def upload_and_extract(
     entry_ids: list[str] = []
     upload = await get_upload(db, upload.id)
     if auto_generate:
-        merged = _transactions_to_merged_entries(upload.transactions)
-        for entry_data in merged:
+        grouped_entries = _group_transactions_for_entries(upload.transactions)
+        for entry_data, source_transactions in grouped_entries:
             entry = await create_entry(db, entry_data)
             entry_ids.append(entry.id)
-        # Mark remaining single transactions
+            for tx in source_transactions:
+                tx.entry_id = entry.id
+        # Mark remaining single transactions.
         for tx in upload.transactions:
             if tx.status == "recognized" and not tx.entry_id:
                 entry_data = _transaction_to_entry(tx)
@@ -509,6 +527,11 @@ async def get_upload(db: AsyncSession, upload_id: str) -> BankStatementUpload | 
     return result.unique().scalar_one_or_none()
 
 
+async def delete_upload(db: AsyncSession, upload: BankStatementUpload) -> None:
+    await db.delete(upload)
+    await db.flush()
+
+
 async def get_transaction(
     db: AsyncSession, transaction_id: str
 ) -> BankStatementTransaction | None:
@@ -522,6 +545,8 @@ async def get_transaction(
 async def generate_entry_for_transaction(
     db: AsyncSession, tx: BankStatementTransaction
 ) -> str:
+    if tx.entry_id == "merged":
+        tx.entry_id = None
     if tx.entry_id:
         return tx.entry_id
     entry_data = _transaction_to_entry(tx)

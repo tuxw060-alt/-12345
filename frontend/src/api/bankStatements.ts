@@ -56,6 +56,13 @@ export async function listBankStatementUploads(params?: {
   return res.data
 }
 
+export async function batchDeleteBankStatementUploads(uploadIds: string[]) {
+  const res = await api.post<{ deleted: number; failed: any[] }>('/bank-statements/batch-delete', {
+    upload_ids: uploadIds,
+  })
+  return res.data
+}
+
 export async function generateBankStatementEntry(transactionId: string) {
   const res = await api.post<{ entry_id: string }>(
     `/bank-statements/transactions/${transactionId}/generate-entry`,

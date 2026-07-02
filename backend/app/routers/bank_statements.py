@@ -19,6 +19,15 @@ class EntryIdResponse(BaseModel):
     entry_id: str
 
 
+class BatchDeleteRequest(BaseModel):
+    upload_ids: list[str]
+
+
+class BatchDeleteResponse(BaseModel):
+    deleted: int
+    failed: list[dict] = []
+
+
 @router.post("/upload", response_model=BankStatementUploadResult, status_code=201)
 async def upload_bank_statement(
     file: UploadFile = File(..., description="银行流水文件"),
@@ -58,6 +67,30 @@ async def list_bank_statement_uploads(
         items=[BankStatementUploadResponse.model_validate(item) for item in items],
         total=total,
     )
+
+
+@router.post("/batch-delete", response_model=BatchDeleteResponse)
+async def batch_delete_uploads(
+    data: BatchDeleteRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    deleted = 0
+    failed: list[dict] = []
+    seen_ids = []
+    for upload_id in data.upload_ids:
+        if upload_id in seen_ids:
+            continue
+        seen_ids.append(upload_id)
+        upload = await bank_statement_service.get_upload(db, upload_id)
+        if not upload:
+            failed.append({"id": upload_id, "reason": "上传记录不存在"})
+            continue
+        try:
+            await bank_statement_service.delete_upload(db, upload)
+            deleted += 1
+        except Exception as e:
+            failed.append({"id": upload_id, "reason": str(e)})
+    return BatchDeleteResponse(deleted=deleted, failed=failed)
 
 
 @router.post("/transactions/{transaction_id}/generate-entry", response_model=EntryIdResponse)

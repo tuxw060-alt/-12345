@@ -1,21 +1,15 @@
-"""
-Kingdee ZhangWuYou (金蝶快记帐) Excel export service.
+"""Kingdee 快记帐 voucher-import Excel export service."""
 
-Generates Excel files compatible with 金蝶快记帐's "凭证引入" (voucher import) feature.
-
-The template follows the standard format:
-- Column headers must exactly match what 快记帐 expects
-- 科目代码 must be stored as text (not number) in Excel
-- Each row = one journal entry line
-- Rows with same voucher number belong to the same voucher
-"""
-
+import json
+import re
 import uuid
 from datetime import date, datetime
 from pathlib import Path
 from typing import Sequence
 
-from openpyxl import Workbook
+from copy import copy
+
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,28 +20,124 @@ from app.config import settings
 from app.models.journal_entry import JournalEntry, JournalEntryLine
 
 
-# Kingdee column headers in exact order
+# 快记帐「凭证导入模板.xlsx」列顺序。会计要求客户/供应商列填辅助核算编码。
 KINGDEE_HEADERS = [
-    "凭证日期",      # A: Voucher date
-    "凭证字",        # B: Voucher type (记/收/付/转)
-    "凭证号",        # C: Voucher number
-    "摘要",          # D: Summary
-    "科目代码",      # E: Account code (MUST be text format!)
-    "科目名称",      # F: Account name
-    "借方金额",      # G: Debit amount
-    "贷方金额",      # H: Credit amount
-    "币别",          # I: Currency
-    "汇率",          # J: Exchange rate
-    "原币金额",      # K: Original currency amount
-    "数量",          # L: Quantity
-    "单价",          # M: Unit price
-    "核算类别",      # N: Auxiliary category
-    "核算代码",      # O: Auxiliary code
-    "核算名称",      # P: Auxiliary name
-    "制单人",        # Q: Creator
-    "审核人",        # R: Reviewer
-    "备注",          # S: Notes
+    "日期",
+    "凭证字",
+    "凭证号",
+    "录入顺序",
+    "摘要",
+    "科目编码",
+    "科目名称",
+    "借方金额",
+    "贷方金额",
+    "客户",
+    "供应商",
 ]
+
+CUSTOMER_ACCOUNT_PREFIXES = ("1122",)
+SUPPLIER_ACCOUNT_PREFIXES = ("2202", "2241")
+AUX_REGISTRY_FILE = "kingdee_auxiliary_registry.json"
+TEMPLATE_PATH = (
+    Path(__file__).resolve().parent.parent.parent
+    / "assets"
+    / "templates"
+    / "kingdee_voucher_import_template.xlsx"
+)
+DATA_START_ROW = 2
+
+
+def _registry_path() -> Path:
+    return settings.data_path / AUX_REGISTRY_FILE
+
+
+def _load_aux_registry() -> dict:
+    path = _registry_path()
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning(f"Auxiliary registry is unreadable, rebuilding: {path}")
+        return {}
+
+
+def _save_aux_registry(registry: dict) -> None:
+    path = _registry_path()
+    path.write_text(
+        json.dumps(registry, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def _normalize_aux_name(name: str) -> str:
+    return re.sub(r"\s+", "", name.strip())
+
+
+def _extract_aux_name(line: JournalEntryLine) -> str | None:
+    """Return the auxiliary name embedded in account name, e.g. 应收账款_某公司."""
+    for sep in ("_", "＿"):
+        if sep in line.account_name:
+            name = line.account_name.rsplit(sep, 1)[-1].strip()
+            return name or None
+    return None
+
+
+def _aux_category(account_code: str) -> str | None:
+    if account_code.startswith(CUSTOMER_ACCOUNT_PREFIXES):
+        return "客户"
+    if account_code.startswith(SUPPLIER_ACCOUNT_PREFIXES):
+        return "供应商"
+    return None
+
+
+def _next_aux_code(items: dict[str, str]) -> str:
+    used_numbers = []
+    for code in items.values():
+        if isinstance(code, str) and code.isdigit():
+            used_numbers.append(int(code))
+    return f"{(max(used_numbers) if used_numbers else 0) + 1:03d}"
+
+
+def _get_aux_code(registry: dict, client_id: str, category: str, name: str) -> str:
+    client_registry = registry.setdefault(client_id or "default", {})
+    category_registry = client_registry.setdefault(category, {})
+    normalized_name = _normalize_aux_name(name)
+    if normalized_name not in category_registry:
+        category_registry[normalized_name] = _next_aux_code(category_registry)
+    return category_registry[normalized_name]
+
+
+def _load_export_workbook():
+    if TEMPLATE_PATH.exists():
+        wb = load_workbook(TEMPLATE_PATH)
+        ws = wb.active
+        if ws.max_row > DATA_START_ROW:
+            ws.delete_rows(DATA_START_ROW + 1, ws.max_row - DATA_START_ROW)
+        for row_idx in range(DATA_START_ROW, ws.max_row + 1):
+            for cell in ws[row_idx]:
+                cell.value = None
+        return wb, ws
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "凭证导入模板"
+    return wb, ws
+
+
+def _copy_row_style(ws, source_row: int, target_row: int) -> None:
+    for col in range(1, len(KINGDEE_HEADERS) + 1):
+        source = ws.cell(row=source_row, column=col)
+        target = ws.cell(row=target_row, column=col)
+        if source.has_style:
+            target.font = copy(source.font)
+            target.fill = copy(source.fill)
+            target.border = copy(source.border)
+            target.alignment = copy(source.alignment)
+            target.number_format = source.number_format
+            target.protection = copy(source.protection)
+        if source.comment:
+            target.comment = copy(source.comment)
 
 
 async def get_entries_for_export(
@@ -95,11 +185,12 @@ def generate_kingdee_excel(
     Returns:
         Path to the generated .xlsx file.
     """
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "凭证"
+    wb, ws = _load_export_workbook()
 
-    # === Styles ===
+    aux_registry = _load_aux_registry()
+    registry_changed = False
+
+    # === Styles for fallback workbook without template ===
     header_font = Font(name="微软雅黑", bold=True, size=10)
     header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
     header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -114,86 +205,96 @@ def generate_kingdee_excel(
 
     # === Write header row ===
     for col_idx, header in enumerate(KINGDEE_HEADERS, 1):
-        cell = ws.cell(row=1, column=col_idx, value=header)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = header_alignment
-        cell.border = thin_border
+        cell = ws.cell(row=1, column=col_idx)
+        if not cell.value:
+            cell.value = header
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = thin_border
 
     # === Write data rows ===
-    row = 2
+    row = DATA_START_ROW
     for entry in entries:
         voucher_date_str = entry.voucher_date.isoformat() if entry.voucher_date else ""
+        voucher_number = entry.voucher_number or ""
 
-        for line in entry.lines:
+        for line_index, line in enumerate(entry.lines, 1):
+            if row != DATA_START_ROW:
+                _copy_row_style(ws, DATA_START_ROW, row)
             ws.cell(row=row, column=1, value=voucher_date_str)
             ws.cell(row=row, column=2, value=entry.voucher_type)
-            ws.cell(row=row, column=3, value=entry.voucher_number or "")
-            ws.cell(row=row, column=4, value=entry.summary)
+            ws.cell(row=row, column=3, value=voucher_number)
+            ws.cell(row=row, column=4, value=line_index)
+            ws.cell(row=row, column=5, value=entry.summary if line_index == 1 else "")
 
-            # CRITICAL: 科目代码 must be text format in Excel
-            account_cell = ws.cell(row=row, column=5, value=line.account_code)
+            # CRITICAL: 科目编码 must be text format in Excel.
+            account_cell = ws.cell(row=row, column=6, value=line.account_code)
             account_cell.number_format = "@"  # Text format
 
-            ws.cell(row=row, column=6, value=line.account_name)
+            ws.cell(row=row, column=7, value=line.account_name)
 
             # Debit / Credit amounts
             if line.direction == "debit":
-                ws.cell(row=row, column=7, value=float(line.amount))
-                ws.cell(row=row, column=8, value="")
-            else:
-                ws.cell(row=row, column=7, value="")
                 ws.cell(row=row, column=8, value=float(line.amount))
+                ws.cell(row=row, column=9, value="")
+            else:
+                ws.cell(row=row, column=8, value="")
+                ws.cell(row=row, column=9, value=float(line.amount))
 
-            # Defaults
-            ws.cell(row=row, column=9, value="人民币")
-            ws.cell(row=row, column=10, value=1)
-            ws.cell(row=row, column=11, value="")  # 原币金额 (same for RMB)
-            ws.cell(row=row, column=12, value="")
-            ws.cell(row=row, column=13, value="")
-            ws.cell(row=row, column=14, value="")
-            ws.cell(row=row, column=15, value="")
-            ws.cell(row=row, column=16, value="")
-            ws.cell(row=row, column=17, value="快记帐")
-            ws.cell(row=row, column=18, value="")
-            ws.cell(row=row, column=19, value="")
+            category = _aux_category(line.account_code)
+            aux_name = _extract_aux_name(line)
+            if category and aux_name:
+                aux_code = _get_aux_code(aux_registry, entry.client_id, category, aux_name)
+                registry_changed = True
+                if category == "客户":
+                    ws.cell(row=row, column=10, value=aux_code)
+                    ws.cell(row=row, column=11, value="")
+                else:
+                    ws.cell(row=row, column=10, value="")
+                    ws.cell(row=row, column=11, value=aux_code)
+            else:
+                ws.cell(row=row, column=10, value="")
+                ws.cell(row=row, column=11, value="")
 
-            # Apply styles to all cells in this row
+            # Apply basic styles when no template style exists.
             for col in range(1, len(KINGDEE_HEADERS) + 1):
                 cell = ws.cell(row=row, column=col)
-                cell.border = thin_border
-                if col in (7, 8, 10, 11, 12, 13):
-                    cell.alignment = amount_alignment
+                if not cell.border or cell.border == Border():
+                    cell.border = thin_border
+                if col in (8, 9):
+                    if not cell.alignment or cell.alignment == Alignment():
+                        cell.alignment = amount_alignment
                 else:
-                    cell.alignment = cell_alignment
-                cell.font = Font(name="微软雅黑", size=9)
+                    if not cell.alignment or cell.alignment == Alignment():
+                        cell.alignment = cell_alignment
+                if not cell.font:
+                    cell.font = Font(name="微软雅黑", size=9)
 
             row += 1
 
     # === Column widths ===
     col_widths = {
-        1: 13,   # 凭证日期
+        1: 13,   # 日期
         2: 8,    # 凭证字
         3: 10,   # 凭证号
-        4: 40,   # 摘要
-        5: 15,   # 科目代码
-        6: 25,   # 科目名称
-        7: 15,   # 借方金额
-        8: 15,   # 贷方金额
-        9: 8,    # 币别
-        10: 8,   # 汇率
-        11: 15,  # 原币金额
-        12: 8,   # 数量
-        13: 10,  # 单价
-        14: 10,  # 核算类别
-        15: 10,  # 核算代码
-        16: 15,  # 核算名称
-        17: 10,  # 制单人
-        18: 10,  # 审核人
-        19: 15,  # 备注
+        4: 10,   # 录入顺序
+        5: 36,   # 摘要
+        6: 15,   # 科目编码
+        7: 36,   # 科目名称
+        8: 15,   # 借方金额
+        9: 15,   # 贷方金额
+        10: 10,  # 客户
+        11: 10,  # 供应商
     }
     for col, width in col_widths.items():
-        ws.column_dimensions[get_column_letter(col)].width = width
+        letter = get_column_letter(col)
+        if not ws.column_dimensions[letter].width:
+            ws.column_dimensions[letter].width = width
+    ws.freeze_panes = "A2"
+
+    if registry_changed:
+        _save_aux_registry(aux_registry)
 
     # === Save ===
     if output_path is None:

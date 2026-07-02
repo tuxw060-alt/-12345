@@ -129,6 +129,30 @@ async def batch_confirm(
     return {"confirmed": len(confirmed), "failed": failed}
 
 
+@router.post("/batch-delete")
+async def batch_delete(
+    entry_ids: list[str],
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete multiple entries. Exported entries are kept as audit records."""
+    deleted = []
+    failed = []
+    for eid in entry_ids:
+        entry = await entry_service.get_entry(db, eid)
+        if not entry:
+            failed.append({"id": eid, "reason": "凭证不存在"})
+            continue
+        if entry.status == "exported":
+            failed.append({"id": eid, "reason": "已导出的凭证不可删除"})
+            continue
+        try:
+            await entry_service.delete_entry(db, entry)
+            deleted.append(eid)
+        except Exception as e:
+            failed.append({"id": eid, "reason": str(e)})
+    return {"deleted": len(deleted), "failed": failed}
+
+
 @router.delete("/{entry_id}", status_code=204)
 async def delete_entry(entry_id: str, db: AsyncSession = Depends(get_db)):
     entry = await entry_service.get_entry(db, entry_id)

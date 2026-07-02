@@ -1,23 +1,130 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
-  Card, Table, Button, Space, Typography, Input, DatePicker,
-  Select, InputNumber, message, Tag, Popconfirm, Row, Col,
+  Button, Space, Typography, Input, DatePicker,
+  Select, message, Tag,
 } from 'antd'
 import {
   SaveOutlined, PlusOutlined, DeleteOutlined, ArrowLeftOutlined,
   CheckOutlined,
 } from '@ant-design/icons'
-import { getEntry, updateEntry, confirmEntry, deleteEntry } from '../api/entries'
+import { getEntry, updateEntry, confirmEntry } from '../api/entries'
 import { getSubjectTree } from '../api/subjects'
 import type { JournalEntry, JournalEntryLine, SubjectTreeNode } from '../types/invoice'
 import dayjs from 'dayjs'
+
+const amountUnits = ['亿', '千', '百', '十', '万', '千', '百', '十', '元', '角', '分']
+const cnDigits = ['零', '壹', '贰', '叁', '肆', '伍', '陆', '柒', '捌', '玖']
+const cnUnits = ['', '拾', '佰', '仟']
+const cnSections = ['', '万', '亿']
+
+function amountToDigits(value?: number) {
+  const cents = Math.round(Math.abs(value || 0) * 100)
+  if (!cents) return amountUnits.map(() => '')
+  const raw = String(cents).padStart(amountUnits.length, '0').slice(-amountUnits.length)
+  const first = raw.search(/[1-9]/)
+  return raw.split('').map((char, index) => {
+    if (index < first) return ''
+    return char
+  })
+}
+
+function sectionToChinese(section: number) {
+  let text = ''
+  let zero = false
+  for (let i = 0; i < 4; i += 1) {
+    const digit = section % 10
+    if (digit === 0) {
+      zero = text.length > 0
+    } else {
+      if (zero) text = `零${text}`
+      text = `${cnDigits[digit]}${cnUnits[i]}${text}`
+      zero = false
+    }
+    section = Math.floor(section / 10)
+  }
+  return text
+}
+
+function amountToChinese(value: number) {
+  const amount = Math.abs(value)
+  const yuan = Math.floor(amount)
+  const jiao = Math.floor(Math.round(amount * 100) / 10) % 10
+  const fen = Math.round(amount * 100) % 10
+
+  if (yuan === 0 && jiao === 0 && fen === 0) return '零元整'
+
+  let integerText = ''
+  let sectionIndex = 0
+  let integer = yuan
+  let needsZero = false
+  while (integer > 0) {
+    const section = integer % 10000
+    if (section === 0) {
+      needsZero = integerText.length > 0
+    } else {
+      let sectionText = sectionToChinese(section)
+      if (needsZero) sectionText = `零${sectionText}`
+      integerText = `${sectionText}${cnSections[sectionIndex]}${integerText}`
+      needsZero = section < 1000
+    }
+    integer = Math.floor(integer / 10000)
+    sectionIndex += 1
+  }
+
+  const decimalText = `${jiao ? `${cnDigits[jiao]}角` : ''}${fen ? `${cnDigits[fen]}分` : ''}`
+  return `${value < 0 ? '负' : ''}${integerText || '零'}元${decimalText || '整'}`
+}
+
+function AmountGrid({ value }: { value?: number }) {
+  return (
+    <div className="voucher-amount-grid">
+      {amountToDigits(value).map((digit, index) => (
+        <span key={`${index}-${amountUnits[index]}`}>{digit}</span>
+      ))}
+    </div>
+  )
+}
+
+function EditableAmountCell({
+  line,
+  targetDirection,
+  onLineChange,
+}: {
+  line: JournalEntryLine
+  targetDirection: 'debit' | 'credit'
+  onLineChange: (field: string, value: any) => void
+}) {
+  const active = line.direction === targetDirection
+  const label = targetDirection === 'debit' ? '借' : '贷'
+
+  return (
+    <div className="voucher-cell voucher-amount-cell">
+      <AmountGrid value={active ? line.amount : 0} />
+      <div className={`voucher-amount-editor ${active ? 'active' : ''}`}>
+        <Button
+          size="small"
+          type={active ? 'primary' : 'default'}
+          onClick={() => onLineChange('direction', targetDirection)}
+        >
+          {label}
+        </Button>
+        {active && (
+          <Input
+            value={line.amount}
+            onChange={(e) => onLineChange('amount', Number(e.target.value) || 0)}
+            size="small"
+          />
+        )}
+      </div>
+    </div>
+  )
+}
 
 export default function EntryEditor() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [entry, setEntry] = useState<JournalEntry | null>(null)
-  const [loading, setLoading] = useState(true)
   const [subjects, setSubjects] = useState<SubjectTreeNode[]>([])
   const [saving, setSaving] = useState(false)
 
@@ -25,7 +132,6 @@ export default function EntryEditor() {
     if (id) {
       getEntry(id).then((data) => {
         setEntry(data)
-        setLoading(false)
       })
     }
     getSubjectTree().then(setSubjects)
@@ -130,107 +236,26 @@ export default function EntryEditor() {
 
   const subjectOptions = flattenSubjects(subjects)
 
-  const columns = [
-    {
-      title: '行号', dataIndex: 'line_number', key: 'num', width: 60,
-    },
-    {
-      title: '科目代码', dataIndex: 'account_code', key: 'code', width: 160,
-      render: (_: any, record: JournalEntryLine) => (
-        <Select
-          showSearch
-          value={record.account_code || undefined}
-          onChange={(v) => {
-            const found = subjectOptions.find((o) => o.value === v)
-            handleLineChange(record.id, 'account_code', v)
-            handleLineChange(record.id, 'account_name', found?.label?.split(' ').slice(1).join(' ') || '')
-          }}
-          options={subjectOptions}
-          style={{ width: '100%' }}
-          placeholder="选择科目"
-          filterOption={(input, option) =>
-            (option?.label ?? '').includes(input) || (option?.value ?? '').includes(input)
-          }
-        />
-      ),
-    },
-    {
-      title: '科目名称', dataIndex: 'account_name', key: 'name', width: 180,
-      render: (v: string) => v || '-',
-    },
-    {
-      title: '方向', dataIndex: 'direction', key: 'dir', width: 80,
-      render: (v: string, record: JournalEntryLine) => (
-        <Select
-          value={v}
-          onChange={(val) => handleLineChange(record.id, 'direction', val)}
-          style={{ width: '100%' }}
-          options={[
-            { value: 'debit', label: '借' },
-            { value: 'credit', label: '贷' },
-          ]}
-        />
-      ),
-    },
-    {
-      title: '金额', dataIndex: 'amount', key: 'amount', width: 150,
-      render: (_: any, record: JournalEntryLine) => (
-        <InputNumber
-          value={record.amount}
-          onChange={(v) => handleLineChange(record.id, 'amount', v || 0)}
-          prefix="¥"
-          style={{ width: '100%' }}
-        />
-      ),
-    },
-    {
-      title: '明细说明', dataIndex: 'summary_detail', key: 'detail',
-      render: (v: string | null, record: JournalEntryLine) => (
-        <Input
-          value={v || ''}
-          onChange={(e) => handleLineChange(record.id, 'summary_detail', e.target.value)}
-        />
-      ),
-    },
-    {
-      title: '操作', key: 'op', width: 60,
-      render: (_: any, record: JournalEntryLine) => (
-        <Button
-          type="link"
-          danger
-          icon={<DeleteOutlined />}
-          onClick={() => removeLine(record.id)}
-        />
-      ),
-    },
-  ]
-
   return (
-    <div>
-      <Space style={{ marginBottom: 16 }}>
+    <div className="voucher-page">
+      <Space className="voucher-toolbar">
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/entries')}>返回</Button>
-        <Typography.Title level={4} style={{ margin: 0 }}>编辑凭证</Typography.Title>
         <Tag color={entry.status === 'draft' ? 'blue' : entry.status === 'confirmed' ? 'green' : 'default'}>
           {entry.status === 'draft' ? '草稿' : entry.status === 'confirmed' ? '已确认' : '已导出'}
         </Tag>
+        <Button icon={<PlusOutlined />} onClick={addLine} type="dashed">
+          添加分录行
+        </Button>
       </Space>
 
-      <Card style={{ marginBottom: 16 }}>
-        <Row gutter={16}>
-          <Col span={6}>
-            <Typography.Text type="secondary">凭证日期</Typography.Text>
-            <DatePicker
-              value={entry.voucher_date ? dayjs(entry.voucher_date) : null}
-              onChange={(d) => handleHeaderChange('voucher_date', d?.format('YYYY-MM-DD') || '')}
-              style={{ width: '100%' }}
-            />
-          </Col>
-          <Col span={4}>
-            <Typography.Text type="secondary">凭证字</Typography.Text>
+      <section className="voucher-sheet">
+        <div className="voucher-head">
+          <div className="voucher-head-left">
+            <span>凭证字</span>
             <Select
               value={entry.voucher_type}
               onChange={(v) => handleHeaderChange('voucher_type', v)}
-              style={{ width: '100%' }}
+              className="voucher-small-select"
               options={[
                 { value: '记', label: '记' },
                 { value: '收', label: '收' },
@@ -238,52 +263,136 @@ export default function EntryEditor() {
                 { value: '转', label: '转' },
               ]}
             />
-          </Col>
-          <Col span={4}>
-            <Typography.Text type="secondary">凭证号</Typography.Text>
             <Input
+              className="voucher-number-input"
               value={entry.voucher_number || ''}
               onChange={(e) => handleHeaderChange('voucher_number', e.target.value)}
-              placeholder="自动编号"
+              placeholder="1"
             />
-          </Col>
-          <Col span={10}>
-            <Typography.Text type="secondary">摘要</Typography.Text>
-            <Input
-              value={entry.summary}
-              onChange={(e) => handleHeaderChange('summary', e.target.value)}
+            <span>号</span>
+            <span>日期</span>
+            <DatePicker
+              value={entry.voucher_date ? dayjs(entry.voucher_date) : null}
+              onChange={(d) => handleHeaderChange('voucher_date', d?.format('YYYY-MM-DD') || '')}
+              className="voucher-date-picker"
             />
-          </Col>
-        </Row>
-      </Card>
+          </div>
+          <Typography.Title level={2} className="voucher-title">记账凭证</Typography.Title>
+          <div className="voucher-period">
+            {entry.voucher_date ? dayjs(entry.voucher_date).format('YYYY年M月') : dayjs().format('YYYY年M月')}
+          </div>
+        </div>
 
-      <Card>
-        <Table
-          columns={columns}
-          dataSource={entry.lines}
-          rowKey="id"
-          pagination={false}
-          size="small"
-          footer={() => (
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Button icon={<PlusOutlined />} onClick={addLine} type="dashed">
-                添加分录行
-              </Button>
-              <Space>
-                <Typography.Text>
-                  借方合计: <span style={{ color: '#1677ff', fontWeight: 600 }}>¥{debitTotal.toFixed(2)}</span>
-                  {' | '}
-                  贷方合计: <span style={{ color: '#ff4d4f', fontWeight: 600 }}>¥{creditTotal.toFixed(2)}</span>
-                </Typography.Text>
-                <Tag color={balanced ? 'green' : 'red'}>
-                  {balanced ? '✓ 借贷平衡' : `✗ 差额 ¥${Math.abs(debitTotal - creditTotal).toFixed(2)}`}
-                </Tag>
-              </Space>
+        <div className="voucher-table" style={{ gridTemplateRows: `64px repeat(${Math.max(entry.lines.length, 4)}, 78px) 80px` }}>
+          <div className="voucher-th voucher-summary-head">摘要</div>
+          <div className="voucher-th voucher-subject-head">会计科目</div>
+          <div className="voucher-th voucher-debit-head">
+            <strong>借方金额</strong>
+            <div className="voucher-unit-row">{amountUnits.map((unit, index) => <span key={`d-${index}`}>{unit}</span>)}</div>
+          </div>
+          <div className="voucher-th voucher-credit-head">
+            <strong>贷方金额</strong>
+            <div className="voucher-unit-row">{amountUnits.map((unit, index) => <span key={`c-${index}`}>{unit}</span>)}</div>
+          </div>
+
+          {entry.lines.map((line, index) => (
+            <div className="voucher-line-row" key={line.id}>
+              <div className="voucher-cell voucher-summary-cell">
+                {index === 0 ? (
+                  <Input.TextArea
+                    value={entry.summary}
+                    autoSize={{ minRows: 2, maxRows: 3 }}
+                    onChange={(e) => handleHeaderChange('summary', e.target.value)}
+                  />
+                ) : (
+                  <Input
+                    value={line.summary_detail || ''}
+                    onChange={(e) => handleLineChange(line.id, 'summary_detail', e.target.value)}
+                    placeholder="摘要"
+                  />
+                )}
+                <Button
+                  type="text"
+                  danger
+                  size="small"
+                  className="voucher-row-delete"
+                  icon={<DeleteOutlined />}
+                  onClick={() => removeLine(line.id)}
+                />
+              </div>
+              <div className="voucher-cell voucher-subject-cell">
+                <Select
+                  showSearch
+                  value={line.account_code || undefined}
+                  onChange={(v) => {
+                    const found = subjectOptions.find((o) => o.value === v)
+                    handleLineChange(line.id, 'account_code', v)
+                    handleLineChange(line.id, 'account_name', found?.label?.split(' ').slice(1).join(' ') || '')
+                  }}
+                  options={subjectOptions}
+                  placeholder="选择科目"
+                  filterOption={(input, option) =>
+                    (option?.label ?? '').includes(input) || (option?.value ?? '').includes(input)
+                  }
+                />
+                <span className="voucher-subject-text">{line.account_code} {line.account_name}</span>
+                <Space className="voucher-line-actions" size={4}>
+                  <Select
+                    value={line.direction}
+                    onChange={(val) => handleLineChange(line.id, 'direction', val)}
+                    size="small"
+                    options={[
+                      { value: 'debit', label: '借' },
+                      { value: 'credit', label: '贷' },
+                    ]}
+                  />
+                  <Input
+                    value={line.amount}
+                    onChange={(e) => handleLineChange(line.id, 'amount', Number(e.target.value) || 0)}
+                    size="small"
+                  />
+                  <Button
+                    type="text"
+                    danger
+                    size="small"
+                    icon={<DeleteOutlined />}
+                    onClick={() => removeLine(line.id)}
+                  />
+                </Space>
+              </div>
+              <EditableAmountCell
+                line={line}
+                targetDirection="debit"
+                onLineChange={(field, value) => handleLineChange(line.id, field, value)}
+              />
+              <EditableAmountCell
+                line={line}
+                targetDirection="credit"
+                onLineChange={(field, value) => handleLineChange(line.id, field, value)}
+              />
             </div>
-          )}
-        />
+          ))}
 
-        <Space style={{ marginTop: 16 }}>
+          {Array.from({ length: Math.max(0, 4 - entry.lines.length) }).map((_, index) => (
+            <div className="voucher-line-row voucher-empty-row" key={`empty-${index}`}>
+              <div className="voucher-cell" />
+              <div className="voucher-cell" />
+              <div className="voucher-cell"><AmountGrid value={0} /></div>
+              <div className="voucher-cell"><AmountGrid value={0} /></div>
+            </div>
+          ))}
+
+          <div className="voucher-total-row">
+            <div className="voucher-total-text">
+              合计：{amountToChinese(debitTotal)}
+              <Tag color={balanced ? 'green' : 'red'}>{balanced ? '借贷平衡' : `差额 ¥${Math.abs(debitTotal - creditTotal).toFixed(2)}`}</Tag>
+            </div>
+            <div className="voucher-total-amount"><AmountGrid value={debitTotal} /></div>
+            <div className="voucher-total-amount"><AmountGrid value={creditTotal} /></div>
+          </div>
+        </div>
+
+        <Space className="voucher-actions">
           <Button
             type="primary"
             icon={<SaveOutlined />}
@@ -301,7 +410,7 @@ export default function EntryEditor() {
             确认凭证
           </Button>
         </Space>
-      </Card>
+      </section>
     </div>
   )
 }

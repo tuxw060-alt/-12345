@@ -27,7 +27,6 @@ const menuItems = [
   { key: '/clients', icon: <TeamOutlined />, label: '客户管理' },
   { key: '/export', icon: <ExportOutlined />, label: '金蝶导出' },
   { key: '/reports', icon: <BarChartOutlined />, label: '财务报表' },
-  { key: '/bank', icon: <BankOutlined />, label: '银行流水' },
 ]
 
 export default function AppLayout() {
