@@ -4,9 +4,11 @@ import csv
 import io
 import re
 import uuid
+import zipfile
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree as ET
 
 from fastapi import UploadFile
 from openpyxl import load_workbook
@@ -27,6 +29,8 @@ def _to_float(value: Any) -> float | None:
         return None
     if isinstance(value, (int, float)):
         return float(value)
+    if _looks_like_time(value):
+        return None
     text = re.sub(r"[^\d.\-]", "", str(value).replace(",", "")).strip()
     if not text:
         return None
@@ -34,6 +38,10 @@ def _to_float(value: Any) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+def _looks_like_time(value: Any) -> bool:
+    return bool(re.fullmatch(r"\s*\d{1,2}:\d{2}(:\d{2})?\s*", str(value or "")))
 
 
 def _to_date(value: Any) -> date | None:
@@ -54,6 +62,51 @@ def _to_date(value: Any) -> date | None:
 
 def _rows_to_text(rows: list[list[Any]]) -> str:
     return "\n".join("\t".join("" if c is None else str(c) for c in row) for row in rows)
+
+
+def _extract_ods_rows(path: Path) -> list[list[Any]]:
+    namespaces = {
+        "office": "urn:oasis:names:tc:opendocument:xmlns:office:1.0",
+        "table": "urn:oasis:names:tc:opendocument:xmlns:table:1.0",
+        "text": "urn:oasis:names:tc:opendocument:xmlns:text:1.0",
+    }
+    table_ns = f"{{{namespaces['table']}}}"
+    office_ns = f"{{{namespaces['office']}}}"
+    text_ns = f"{{{namespaces['text']}}}"
+    rows: list[list[Any]] = []
+
+    with zipfile.ZipFile(path) as ods:
+        with ods.open("content.xml") as content:
+            root = ET.parse(content).getroot()
+
+    for table in root.findall(".//table:table", namespaces):
+        table_name = table.attrib.get(f"{table_ns}name")
+        if table_name:
+            rows.append([f"工作表 {table_name}"])
+        for row in table.findall("table:table-row", namespaces):
+            repeat_rows = min(int(row.attrib.get(f"{table_ns}number-rows-repeated", "1")), 500)
+            values: list[Any] = []
+            for cell in row.findall("table:table-cell", namespaces):
+                repeat_cols = min(int(cell.attrib.get(f"{table_ns}number-columns-repeated", "1")), 50)
+                value: Any = cell.attrib.get(f"{office_ns}value")
+                if value is None:
+                    value = cell.attrib.get(f"{office_ns}date-value")
+                if value is None:
+                    parts = [
+                        "".join(p.itertext())
+                        for p in cell.findall(f"{text_ns}p")
+                    ]
+                    value = "\n".join(part for part in parts if part).strip() or None
+                values.extend([value] * repeat_cols)
+            if any(v not in (None, "") for v in values):
+                for _ in range(repeat_rows):
+                    rows.append(values)
+            if len(rows) >= 500:
+                break
+        if len(rows) >= 500:
+            break
+
+    return rows[:500]
 
 
 def _guess_subject(
@@ -134,11 +187,41 @@ def _detect_columns(rows: list[list[Any]]) -> dict[str, int | None]:
         if all(v is not None for v in col_map.values()):
             break
 
+    for row in rows[:80]:
+        if (
+            len(row) >= 8
+            and _to_date(row[0])
+            and _looks_like_time(row[1])
+            and (_to_float(row[2]) is not None or _to_float(row[3]) is not None)
+            and _to_float(row[4]) is not None
+        ):
+            col_map.update({
+                "date": 0,
+                "expense": 2,
+                "income": 3,
+                "balance": 4,
+                "account": 5,
+                "counterparty": 6,
+                "desc": 7,
+            })
+            break
+
     # If headers not found, try typed-value detection
     if col_map["date"] is None or col_map["desc"] is None:
         for row in rows[:50]:
             if not row or len(row) < 4:
                 continue
+            if len(row) >= 8 and _to_date(row[0]) and _looks_like_time(row[1]):
+                col_map.update({
+                    "date": 0,
+                    "expense": 2,
+                    "income": 3,
+                    "balance": 4,
+                    "account": 5,
+                    "counterparty": 6,
+                    "desc": 7,
+                })
+                break
             for i, cell in enumerate(row):
                 if cell is None:
                     continue
@@ -234,6 +317,10 @@ def _extract_spreadsheet(path: Path) -> tuple[str, list[dict[str, Any]]]:
             text = raw.decode("utf-8", errors="ignore")
         rows = list(csv.reader(io.StringIO(text)))
         return _rows_to_text(rows[:500]), _parse_transaction_rows(rows)
+
+    if path.suffix.lower() == ".ods":
+        rows = _extract_ods_rows(path)
+        return _rows_to_text(rows), _parse_transaction_rows(rows)
 
     wb = load_workbook(path, read_only=True, data_only=True)
     rows: list[list[Any]] = []
@@ -400,7 +487,7 @@ async def upload_and_extract(
 
     try:
         local_transactions: list[dict[str, Any]] = []
-        if ext in {".csv", ".xlsx", ".xlsm"}:
+        if ext in {".csv", ".xlsx", ".xlsm", ".ods"}:
             text, local_transactions = _extract_spreadsheet(upload_path)
         else:
             text = extract_text(upload_path)

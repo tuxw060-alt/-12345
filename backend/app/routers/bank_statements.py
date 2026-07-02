@@ -44,7 +44,7 @@ async def upload_bank_statement(
     auto_generate: bool = Query(False, description="识别后自动生成记账凭证"),
     db: AsyncSession = Depends(get_db),
 ):
-    allowed = {".csv", ".xlsx", ".xlsm", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".pdf"}
+    allowed = {".csv", ".xlsx", ".xlsm", ".ods", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".pdf"}
     ext = "." + file.filename.rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else ""
     if ext not in allowed:
         raise HTTPException(

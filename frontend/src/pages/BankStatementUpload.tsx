@@ -308,7 +308,7 @@ export default function BankStatementUpload() {
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".csv,.xlsx,.xlsm,.pdf,image/*"
+        accept=".csv,.xlsx,.xlsm,.ods,.pdf,image/*"
         style={{ display: 'none' }}
         onChange={(e) => {
           if (e.target.files) {
