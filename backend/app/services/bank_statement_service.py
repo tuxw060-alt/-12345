@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.models.bank_statement import BankStatementTransaction, BankStatementUpload
+from app.models.journal_entry import JournalEntry
 from app.schemas.journal_entry import EntryCreate, EntryLineCreate
 from app.services.ai_service import ai_service, extract_text
 from app.services.entry_service import create_entry
@@ -548,7 +549,10 @@ async def generate_entry_for_transaction(
     if tx.entry_id == "merged":
         tx.entry_id = None
     if tx.entry_id:
-        return tx.entry_id
+        existing = await db.get(JournalEntry, tx.entry_id)
+        if existing:
+            return tx.entry_id
+        tx.entry_id = None
     entry_data = _transaction_to_entry(tx)
     if not entry_data:
         raise ValueError("该流水无法生成凭证")
@@ -556,3 +560,49 @@ async def generate_entry_for_transaction(
     tx.entry_id = entry.id
     await db.flush()
     return entry.id
+
+
+async def generate_entries_for_client(
+    db: AsyncSession,
+    client_id: str,
+) -> list[str]:
+    stmt = (
+        select(BankStatementTransaction)
+        .where(
+            BankStatementTransaction.client_id == client_id,
+            BankStatementTransaction.status == "recognized",
+        )
+        .order_by(BankStatementTransaction.transaction_date, BankStatementTransaction.created_at)
+    )
+    result = await db.execute(stmt)
+    transactions = list(result.scalars().all())
+
+    existing_ids = {tx.entry_id for tx in transactions if tx.entry_id and tx.entry_id != "merged"}
+    valid_ids: set[str] = set()
+    if existing_ids:
+        existing_result = await db.execute(
+            select(JournalEntry.id).where(JournalEntry.id.in_(existing_ids))
+        )
+        valid_ids = set(existing_result.scalars().all())
+
+    for tx in transactions:
+        if tx.entry_id == "merged" or (tx.entry_id and tx.entry_id not in valid_ids):
+            tx.entry_id = None
+
+    entry_ids: list[str] = []
+    for entry_data, source_transactions in _group_transactions_for_entries(transactions):
+        entry = await create_entry(db, entry_data)
+        entry_ids.append(entry.id)
+        for tx in source_transactions:
+            tx.entry_id = entry.id
+
+    for tx in transactions:
+        if tx.status == "recognized" and not tx.entry_id:
+            entry_data = _transaction_to_entry(tx)
+            if entry_data:
+                entry = await create_entry(db, entry_data)
+                tx.entry_id = entry.id
+                entry_ids.append(entry.id)
+
+    await db.flush()
+    return entry_ids

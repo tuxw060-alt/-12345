@@ -283,7 +283,7 @@ export default function EntryEditor() {
           </div>
         </div>
 
-        <div className="voucher-table" style={{ gridTemplateRows: `64px repeat(${Math.max(entry.lines.length, 4)}, 78px) 80px` }}>
+        <div className="voucher-table" style={{ gridTemplateRows: `64px repeat(${Math.max(entry.lines.length, 4)}, 96px) 80px` }}>
           <div className="voucher-th voucher-summary-head">摘要</div>
           <div className="voucher-th voucher-subject-head">会计科目</div>
           <div className="voucher-th voucher-debit-head">

@@ -4,10 +4,11 @@ import uuid
 from datetime import date
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from sqlalchemy.orm import selectinload
 
 from app.models.journal_entry import JournalEntry, JournalEntryLine
+from app.models.bank_statement import BankStatementTransaction
 from app.schemas.journal_entry import EntryCreate, EntryUpdate
 
 
@@ -126,5 +127,10 @@ async def confirm_entry(db: AsyncSession, entry: JournalEntry) -> JournalEntry:
 
 
 async def delete_entry(db: AsyncSession, entry: JournalEntry) -> None:
+    await db.execute(
+        update(BankStatementTransaction)
+        .where(BankStatementTransaction.entry_id == entry.id)
+        .values(entry_id=None)
+    )
     await db.delete(entry)
     await db.flush()

@@ -69,3 +69,11 @@ export async function generateBankStatementEntry(transactionId: string) {
   )
   return res.data
 }
+
+export async function generateBankStatementEntries(clientId: string) {
+  const res = await api.post<{ entry_ids: string[]; generated: number }>(
+    '/bank-statements/generate-entries',
+    { client_id: clientId },
+  )
+  return res.data
+}

@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { Card, Table, Tag, Button, Space, Typography, Popconfirm, message, Modal, List, DatePicker } from 'antd'
 import { CheckOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { listEntries, confirmEntry, deleteEntry, batchConfirm, batchDeleteEntries } from '../api/entries'
+import { generateBankStatementEntries } from '../api/bankStatements'
 import { listTemplates, applyTemplate, type EntryTemplate } from '../api/templates'
 import { useAppStore } from '../hooks/useAppStore'
 import { useNavigate } from 'react-router-dom'
@@ -17,6 +18,7 @@ export default function EntryList() {
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [batchLoading, setBatchLoading] = useState(false)
   const [deleteAllLoading, setDeleteAllLoading] = useState(false)
+  const [bankGenerating, setBankGenerating] = useState(false)
   const { currentClient } = useAppStore()
   const navigate = useNavigate()
 
@@ -61,6 +63,24 @@ export default function EntryList() {
     if (!currentClient) { message.warning('请先选择客户'); return }
     listTemplates(currentClient.id).then((res) => setTemplates(res.items))
     setTplModalOpen(true)
+  }
+
+  const handleGenerateBankEntries = async () => {
+    if (!currentClient) { message.warning('Please select a client first'); return }
+    setBankGenerating(true)
+    try {
+      const res = await generateBankStatementEntries(currentClient.id)
+      if (res.generated > 0) {
+        message.success(`Generated ${res.generated} bank statement vouchers`)
+      } else {
+        message.info('No new bank statement vouchers to generate')
+      }
+      fetchEntries()
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || 'Failed to generate bank statement vouchers')
+    } finally {
+      setBankGenerating(false)
+    }
   }
 
   const handleBatchConfirm = async () => {
@@ -172,6 +192,14 @@ export default function EntryList() {
           {draftCount > 0 && <Tag style={{ marginLeft: 8 }} color="blue">{draftCount} 张草稿</Tag>}
         </Typography.Title>
         <Space>
+          <Button
+            icon={<ThunderboltOutlined />}
+            onClick={handleGenerateBankEntries}
+            loading={bankGenerating}
+            disabled={!currentClient}
+          >
+            生成银行流水凭证
+          </Button>
           <Button icon={<ThunderboltOutlined />} onClick={openTemplates}>快速凭证</Button>
           <Popconfirm
             title="删除当前列表全部凭证？"
