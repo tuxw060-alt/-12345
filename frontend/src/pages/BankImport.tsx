@@ -5,7 +5,7 @@ import {
 } from 'antd'
 import { UploadOutlined, ThunderboltOutlined, BankOutlined } from '@ant-design/icons'
 import { useAppStore } from '../hooks/useAppStore'
-import axios from 'axios'
+import api from '../api/client'
 import dayjs from 'dayjs'
 
 export default function BankImport() {
@@ -25,7 +25,7 @@ export default function BankImport() {
     try {
       const form = new FormData()
       form.append('file', file)
-      const res = await axios.post('/api/v1/bank/upload', form, {
+      const res = await api.post('/bank/upload', form, {
         params: { client_id: currentClient.id },
         headers: { 'Content-Type': 'multipart/form-data' },
       })
@@ -45,7 +45,7 @@ export default function BankImport() {
     if (selectedTxns.length === 0) { message.warning('请勾选要生成的交易'); return }
     setGenerating(true)
     try {
-      const res = await axios.post('/api/v1/bank/generate', {
+      const res = await api.post('/bank/generate', {
         client_id: currentClient.id,
         transactions: selectedTxns,
         voucher_date: voucherDate,

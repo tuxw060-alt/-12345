@@ -15,6 +15,7 @@ from app.schemas.journal_entry import (
     EntryGenerateResponse,
 )
 from app.services import entry_service, invoice_service, client_service
+from app.services.entry_service import EntryValidationError
 from app.services.entry_generator import generate_entry_from_invoice
 
 router = APIRouter(prefix="/api/v1/entries", tags=["entries"])
@@ -103,8 +104,8 @@ async def confirm_entry(entry_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="凭证不存在")
     try:
         entry = await entry_service.confirm_entry(db, entry)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except EntryValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return EntryResponse.model_validate(entry)
 
 
@@ -127,9 +128,35 @@ async def batch_confirm(
         try:
             await entry_service.confirm_entry(db, entry)
             confirmed.append(eid)
+        except EntryValidationError as e:
+            failed.append({"id": eid, "reason": str(e)})
         except Exception as e:
             failed.append({"id": eid, "reason": str(e)})
     return {"confirmed": len(confirmed), "failed": failed}
+
+
+@router.post("/batch-delete")
+async def batch_delete(
+    entry_ids: list[str],
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete multiple entries. Exported entries are kept as audit records."""
+    deleted = []
+    failed = []
+    for eid in entry_ids:
+        entry = await entry_service.get_entry(db, eid)
+        if not entry:
+            failed.append({"id": eid, "reason": "凭证不存在"})
+            continue
+        if entry.status == "exported":
+            failed.append({"id": eid, "reason": "已导出的凭证不可删除"})
+            continue
+        try:
+            await entry_service.delete_entry(db, entry)
+            deleted.append(eid)
+        except Exception as e:
+            failed.append({"id": eid, "reason": str(e)})
+    return {"deleted": len(deleted), "failed": failed}
 
 
 @router.delete("/{entry_id}", status_code=204)

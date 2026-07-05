@@ -17,8 +17,8 @@
 | 前端构建 | `cd frontend && pnpm build` |
 | 安装后端依赖 | `cd backend && pip install -r requirements.txt` |
 | 安装前端依赖 | `cd frontend && pnpm install` |
-| API 文档 | http://localhost:8000/docs |
-| 前端页面 | http://localhost:5173 |
+| API 文档 | https://txwapis.com/docs |
+| 前端页面 | https://txwapis.com |
 
 ## 项目结构
 
@@ -49,7 +49,7 @@ frontend/src/
 1. 先启动后端：`cd backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`（后台运行）
 2. 再启动前端：`cd frontend && pnpm dev`（后台运行）
 3. 等待 3 秒后检查 `curl -s http://127.0.0.1:8000/api/v1/health`
-4. 检查 `curl -s -o /dev/null -w "%{http_code}" http://localhost:5173`
+4. 检查 `curl -s -o /dev/null -w "%{http_code}" https://txwapis.com`
 5. 报告两个端口的状态
 
 ---

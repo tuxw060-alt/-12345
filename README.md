@@ -37,7 +37,7 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 首次启动会自动创建数据库并预置会计科目表和匹配规则。
-API 文档: http://localhost:8000/docs
+API 文档: https://txwapis.com/docs
 
 ### 3. 安装前端依赖
 
@@ -53,7 +53,7 @@ cd frontend
 pnpm dev
 ```
 
-打开 http://localhost:5173
+打开 https://txwapis.com
 
 ### 5. 使用流程
 

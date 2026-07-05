@@ -1,53 +1,56 @@
 import api from './client'
 import type {
-  DocumentType, VoucherTemplate, VoucherTemplateLine,
+  DocumentType, VoucherTemplate,
   GenerateDraftResponse, ListResponse,
 } from '../types/invoice'
 
+const BASE = '/document-vouchers'
+
 // ── Document Types ──────────────────────────────────────────
 
-export async function getDocumentTypes(enabledOnly = false): Promise<DocumentType[]> {
-  const res = await api.get<ListResponse<DocumentType>>('/document-types', {
-    params: { enabled_only: enabledOnly },
+export async function getDocumentTypes(companyId?: string): Promise<DocumentType[]> {
+  const res = await api.get<ListResponse<DocumentType>>(`${BASE}/document-types`, {
+    params: companyId ? { company_id: companyId } : {},
   })
   return res.data.items
 }
 
 export async function createDocumentType(data: Partial<DocumentType>): Promise<DocumentType> {
-  const res = await api.post<DocumentType>('/document-types', data)
+  const res = await api.post<DocumentType>(`${BASE}/document-types`, data)
   return res.data
 }
 
 export async function updateDocumentType(id: string, data: Partial<DocumentType>): Promise<DocumentType> {
-  const res = await api.put<DocumentType>(`/document-types/${id}`, data)
+  const res = await api.put<DocumentType>(`${BASE}/document-types/${id}`, data)
   return res.data
 }
 
 export async function deleteDocumentType(id: string): Promise<void> {
-  await api.delete(`/document-types/${id}`)
+  await api.delete(`${BASE}/document-types/${id}`)
 }
 
 export async function restorePresetDocumentTypes(): Promise<DocumentType[]> {
-  const res = await api.post<ListResponse<DocumentType>>('/document-types/restore-presets')
+  await api.post(`${BASE}/document-types/restore-defaults`)
+  const res = await api.get<ListResponse<DocumentType>>(`${BASE}/document-types`)
   return res.data.items
 }
 
 // ── Voucher Templates ───────────────────────────────────────
 
 export async function getVoucherTemplates(documentTypeId?: string): Promise<VoucherTemplate[]> {
-  const res = await api.get<ListResponse<VoucherTemplate>>('/voucher-templates', {
+  const res = await api.get<ListResponse<VoucherTemplate>>(`${BASE}/templates`, {
     params: documentTypeId ? { document_type_id: documentTypeId } : {},
   })
   return res.data.items
 }
 
 export async function getVoucherTemplate(id: string): Promise<VoucherTemplate> {
-  const res = await api.get<VoucherTemplate>(`/voucher-templates/${id}`)
+  const res = await api.get<VoucherTemplate>(`${BASE}/templates/${id}`)
   return res.data
 }
 
 export async function createVoucherTemplate(data: {
-  document_type_id?: string | null
+  document_type_id: string
   document_name: string
   settlement_method: string
   business_type: string
@@ -66,75 +69,53 @@ export async function createVoucherTemplate(data: {
     allow_manual_edit?: boolean
   }[]
 }): Promise<VoucherTemplate> {
-  const res = await api.post<VoucherTemplate>('/voucher-templates', data)
+  const res = await api.post<VoucherTemplate>(`${BASE}/templates`, data)
   return res.data
 }
 
 export async function updateVoucherTemplate(
   id: string,
-  data: Partial<{
-    document_type_id: string | null
-    document_name: string
-    settlement_method: string
-    business_type: string
-    summary_template: string
-    is_enabled: boolean
-    priority: number
-    lines: any[]
-  }>
+  data: Record<string, any>
 ): Promise<VoucherTemplate> {
-  const res = await api.put<VoucherTemplate>(`/voucher-templates/${id}`, data)
+  const res = await api.put<VoucherTemplate>(`${BASE}/templates/${id}`, data)
   return res.data
 }
 
 export async function deleteVoucherTemplate(id: string): Promise<void> {
-  await api.delete(`/voucher-templates/${id}`)
+  await api.delete(`${BASE}/templates/${id}`)
 }
 
 export async function copyVoucherTemplate(id: string): Promise<VoucherTemplate> {
-  const res = await api.post<VoucherTemplate>(`/voucher-templates/${id}/copy`)
-  return res.data
-}
-
-export async function toggleVoucherTemplate(id: string): Promise<VoucherTemplate> {
-  const res = await api.put<VoucherTemplate>(`/voucher-templates/${id}/toggle`)
+  const res = await api.post<VoucherTemplate>(`${BASE}/templates/${id}/copy`)
   return res.data
 }
 
 // ── Matching & Generation ───────────────────────────────────
 
-export async function matchTemplates(params: {
+export async function recommendTemplate(params: {
+  client_id?: string
+  template_id?: string
   document_type_id?: string
+  document_name?: string
   settlement_method?: string
   business_type?: string
-  search_text?: string
-}): Promise<{
-  matched_templates: VoucherTemplate[]
-  suggested_document_type_id: string | null
-  suggested_business_type: string | null
-  suggested_settlement_method: string | null
-}> {
-  const res = await api.post('/voucher-templates/match', params)
-  return res.data
-}
-
-export async function generateDraftFromTemplate(data: {
-  template_id: string
-  client_id: string
-  voucher_date?: string
-  amounts: {
-    total_amount?: number
-    amount?: number
-    tax_amount?: number
-    income_amount?: number
-    expense_amount?: number
-    balance?: number
-  }
-  summary_vars?: Record<string, string>
+  summary?: string
   counterparty_name?: string
-  source_invoice_id?: string
-  source_transaction_id?: string
-}): Promise<GenerateDraftResponse> {
-  const res = await api.post<GenerateDraftResponse>('/voucher-templates/generate-draft', data)
+  total_amount?: number
+  amount?: number
+  tax_amount?: number
+  income_amount?: number
+  expense_amount?: number
+  balance?: number
+}): Promise<{
+  template_id: string | null
+  document_type_id: string | null
+  document_name: string | null
+  settlement_method: string | null
+  business_type: string
+  confidence: number
+  reason: string
+}> {
+  const res = await api.post(`${BASE}/recommend-template`, params)
   return res.data
 }

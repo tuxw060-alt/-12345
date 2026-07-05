@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { Card, Table, Tag, Button, Space, Typography, Popconfirm, message, Modal, List, DatePicker } from 'antd'
 import { CheckOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined } from '@ant-design/icons'
-import { listEntries, confirmEntry, deleteEntry } from '../api/entries'
+import { listEntries, confirmEntry, deleteEntry, batchConfirm, batchDeleteEntries } from '../api/entries'
+import { generateBankStatementEntries } from '../api/bankStatements'
 import { listTemplates, applyTemplate, type EntryTemplate } from '../api/templates'
-import axios from 'axios'
 import { useAppStore } from '../hooks/useAppStore'
 import { useNavigate } from 'react-router-dom'
 import type { JournalEntry } from '../types/invoice'
@@ -17,6 +17,8 @@ export default function EntryList() {
   const [loading, setLoading] = useState(true)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [batchLoading, setBatchLoading] = useState(false)
+  const [deleteAllLoading, setDeleteAllLoading] = useState(false)
+  const [bankGenerating, setBankGenerating] = useState(false)
   const { currentClient } = useAppStore()
   const navigate = useNavigate()
 
@@ -63,12 +65,29 @@ export default function EntryList() {
     setTplModalOpen(true)
   }
 
+  const handleGenerateBankEntries = async () => {
+    if (!currentClient) { message.warning('Please select a client first'); return }
+    setBankGenerating(true)
+    try {
+      const res = await generateBankStatementEntries(currentClient.id)
+      if (res.generated > 0) {
+        message.success(`Generated ${res.generated} bank statement vouchers`)
+      } else {
+        message.info('No new bank statement vouchers to generate')
+      }
+      fetchEntries()
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || 'Failed to generate bank statement vouchers')
+    } finally {
+      setBankGenerating(false)
+    }
+  }
+
   const handleBatchConfirm = async () => {
     if (selectedIds.length === 0) return
     setBatchLoading(true)
     try {
-      const res = await axios.post('/api/v1/entries/batch-confirm', selectedIds)
-      const { confirmed, failed } = res.data
+      const { confirmed, failed } = await batchConfirm(selectedIds)
       if (confirmed > 0) message.success(`已确认 ${confirmed} 张凭证`)
       if (failed?.length > 0) {
         const reasons = failed.map((f: any) => `${f.id.slice(0, 8)}...: ${f.reason}`).join('; ')
@@ -80,6 +99,30 @@ export default function EntryList() {
       message.error('批量确认失败')
     } finally {
       setBatchLoading(false)
+    }
+  }
+
+  const deletableEntries = entries.filter((entry) => entry.status !== 'exported')
+
+  const handleDeleteAll = async () => {
+    if (deletableEntries.length === 0) {
+      message.info('当前列表没有可删除的凭证')
+      return
+    }
+    setDeleteAllLoading(true)
+    try {
+      const { deleted, failed } = await batchDeleteEntries(deletableEntries.map((entry) => entry.id))
+      if (deleted > 0) message.success(`已删除 ${deleted} 张凭证`)
+      if (failed?.length > 0) {
+        const reasons = failed.slice(0, 5).map((f: any) => `${f.id.slice(0, 8)}...: ${f.reason}`).join('; ')
+        message.warning(`${failed.length} 张未删除: ${reasons}`)
+      }
+      setSelectedIds([])
+      fetchEntries()
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || '全部删除失败')
+    } finally {
+      setDeleteAllLoading(false)
     }
   }
 
@@ -149,7 +192,32 @@ export default function EntryList() {
           {draftCount > 0 && <Tag style={{ marginLeft: 8 }} color="blue">{draftCount} 张草稿</Tag>}
         </Typography.Title>
         <Space>
+          <Button
+            icon={<ThunderboltOutlined />}
+            onClick={handleGenerateBankEntries}
+            loading={bankGenerating}
+            disabled={!currentClient}
+          >
+            生成银行流水凭证
+          </Button>
           <Button icon={<ThunderboltOutlined />} onClick={openTemplates}>快速凭证</Button>
+          <Popconfirm
+            title="删除当前列表全部凭证？"
+            description={`将删除当前筛选下 ${deletableEntries.length} 张未导出的凭证，已导出凭证会保留。此操作不可恢复。`}
+            okText="全部删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true, loading: deleteAllLoading }}
+            onConfirm={handleDeleteAll}
+          >
+            <Button
+              danger
+              icon={<DeleteOutlined />}
+              loading={deleteAllLoading}
+              disabled={deletableEntries.length === 0}
+            >
+              全部删除
+            </Button>
+          </Popconfirm>
           {selectedIds.length > 0 && (
             <Button
               type="primary"

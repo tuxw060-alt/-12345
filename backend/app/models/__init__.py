@@ -5,7 +5,11 @@ from app.models.matching_rule import MatchingRule
 from app.models.journal_entry import JournalEntry, JournalEntryLine
 from app.models.entry_template import EntryTemplate, EntryTemplateLine
 from app.models.bank_statement import BankStatementUpload, BankStatementTransaction
-from app.models.voucher_template import DocumentType, VoucherTemplate, VoucherTemplateLine
+from app.models.document_voucher import (
+    DocumentType,
+    DocumentVoucherTemplate,
+    DocumentVoucherTemplateLine,
+)
 
 __all__ = [
     "Client",
@@ -19,6 +23,6 @@ __all__ = [
     "BankStatementUpload",
     "BankStatementTransaction",
     "DocumentType",
-    "VoucherTemplate",
-    "VoucherTemplateLine",
+    "DocumentVoucherTemplate",
+    "DocumentVoucherTemplateLine",
 ]

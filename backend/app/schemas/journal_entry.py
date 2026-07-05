@@ -9,11 +9,21 @@ class EntryLineBase(BaseModel):
     account_code: str = Field(..., max_length=20, description="科目代码")
     account_name: str = Field(..., max_length=100, description="科目名称")
     direction: str = Field(..., description="debit(借) 或 credit(贷)")
-    amount: float = Field(..., gt=0, description="金额")
+    amount: float = Field(..., ge=0, description="金额")
     summary_detail: str | None = None
-    manual_account_override: bool = Field(
-        default=False, description="用户是否手动修改过科目(模板/规则不可自动覆盖)"
-    )
+    account_full_name: str | None = None
+    parent_account_code: str | None = None
+    parent_account_name: str | None = None
+    auxiliary_type: str | None = None
+    auxiliary_code: str | None = None
+    auxiliary_name: str | None = None
+    counterparty_name: str | None = None
+    counterparty_account: str | None = None
+    source_type: str | None = None
+    source_document_id: str | None = None
+    source_row_id: str | None = None
+    manual_account_override: bool = False
+    account_selection_source: str = "auto"
 
 
 class EntryLineCreate(EntryLineBase):

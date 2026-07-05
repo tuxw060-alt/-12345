@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Avatar, Button, Grid, Layout, Menu, Select, Space, Typography, message, theme } from 'antd'
+import { Avatar, Grid, Layout, Menu, Select, Space, Typography, theme } from 'antd'
 import {
   AppstoreOutlined,
   AuditOutlined,
@@ -9,10 +9,8 @@ import {
   BookOutlined,
   ExportOutlined,
   FileTextOutlined,
-  LogoutOutlined,
   TeamOutlined,
   UploadOutlined,
-  ToolOutlined,
 } from '@ant-design/icons'
 import { listClients } from '../../api/clients'
 import { useAppStore } from '../../hooks/useAppStore'
@@ -26,26 +24,11 @@ const menuItems = [
   { key: '/bank-statements/upload', icon: <BankOutlined />, label: '银行流水' },
   { key: '/entries', icon: <FileTextOutlined />, label: '记账凭证' },
   { key: '/subjects', icon: <BookOutlined />, label: '科目规则' },
-  { key: '/voucher-settings', icon: <ToolOutlined />, label: '票据设置' },
+  { key: '/accounting-settings', icon: <AuditOutlined />, label: '会计工作' },
   { key: '/clients', icon: <TeamOutlined />, label: '客户管理' },
   { key: '/export', icon: <ExportOutlined />, label: '金蝶导出' },
   { key: '/reports', icon: <BarChartOutlined />, label: '财务报表' },
 ]
-
-const savedClientKey = 'currentClientId'
-
-function getSelectedMenuKey(pathname: string) {
-  if (pathname === '/') return '/'
-  if (pathname.startsWith('/invoices')) return '/invoices/upload'
-  if (pathname.startsWith('/bank-statements')) return '/bank-statements/upload'
-  if (pathname.startsWith('/entries')) return '/entries'
-  if (pathname.startsWith('/subjects')) return '/subjects'
-  if (pathname.startsWith('/voucher-settings')) return '/voucher-settings'
-  if (pathname.startsWith('/clients')) return '/clients'
-  if (pathname.startsWith('/export')) return '/export'
-  if (pathname.startsWith('/reports')) return '/reports'
-  return '/'
-}
 
 export default function AppLayout() {
   const [collapsed, setCollapsed] = useState(false)
@@ -58,53 +41,22 @@ export default function AppLayout() {
   const isMobile = !screens.md
 
   const refreshClientOptions = useCallback(() => {
-    listClients({ is_active: true })
-      .then((res) => {
-        setClients(res.items)
-        const savedClientId = localStorage.getItem(savedClientKey)
-        const savedClient = savedClientId
-          ? res.items.find((client) => client.id === savedClientId)
-          : null
-
-        if (currentClient && !res.items.some((client) => client.id === currentClient.id)) {
-          setCurrentClient(savedClient || null)
-          if (!savedClient) localStorage.removeItem(savedClientKey)
-          return
-        }
-
-        if (!currentClient && savedClient) {
-          setCurrentClient(savedClient)
-        }
-      })
-      .catch(() => {
-        message.error('客户列表加载失败，请稍后重试')
-      })
+    listClients({ is_active: true }).then((res) => {
+      setClients(res.items)
+      if (currentClient && !res.items.some((client) => client.id === currentClient.id)) {
+        setCurrentClient(null)
+      }
+    })
   }, [currentClient, setCurrentClient])
 
   useEffect(() => {
     refreshClientOptions()
   }, [clientRefreshKey, refreshClientOptions])
 
-  const selectedKey = getSelectedMenuKey(location.pathname)
-  const currentMenu = menuItems.find((m) => m.key === selectedKey) || menuItems[0]
-  const currentClientLabel = currentClient
-    ? `${currentClient.name}${currentClient.tax_type === 'general' ? '（一般纳税人）' : '（小规模）'}`
-    : undefined
-
-  const handleClientChange = (val?: string) => {
-    const client = clients.find((x) => x.id === val) || null
-    setCurrentClient(client)
-    if (client) {
-      localStorage.setItem(savedClientKey, client.id)
-    } else {
-      localStorage.removeItem(savedClientKey)
-    }
-  }
-
-  const handleLogout = () => {
-    localStorage.removeItem('token')
-    window.location.reload()
-  }
+  const selectedKey = location.pathname.startsWith('/bank-statements')
+    ? '/bank-statements/upload'
+    : '/' + location.pathname.split('/')[1]
+  const currentMenu = menuItems.find((item) => item.key === selectedKey) || menuItems[0]
 
   return (
     <Layout className="app-shell">
@@ -122,7 +74,7 @@ export default function AppLayout() {
           <span className="app-brand-mark">快</span>
           {!collapsed && (
             <span>
-              <strong>快记帐</strong>
+              <strong>快记账</strong>
               <small>AI Accounting Copilot</small>
             </span>
           )}
@@ -137,7 +89,7 @@ export default function AppLayout() {
         {!collapsed && (
           <div className="sider-note">
             <AuditOutlined />
-            <span>发票识别、凭证复核、金蝶导出，一条流程闭环。</span>
+            <span>发票、流水、凭证、报表，一套流程闭环处理。</span>
           </div>
         )}
       </Sider>
@@ -159,25 +111,22 @@ export default function AppLayout() {
             <Typography.Text type="secondary">当前客户</Typography.Text>
             <Select
               allowClear
-              showSearch
-              optionFilterProp="label"
               placeholder="选择客户"
               style={{ width: isMobile ? 190 : 280 }}
               value={currentClient?.id || undefined}
-              title={currentClientLabel}
               onOpenChange={(open) => {
                 if (open) refreshClientOptions()
               }}
-              onChange={handleClientChange}
+              onChange={(value) => {
+                const client = clients.find((item) => item.id === value) || null
+                setCurrentClient(client)
+              }}
               options={clients.map((client) => ({
                 value: client.id,
                 label: `${client.name}${client.tax_type === 'general' ? '（一般纳税人）' : '（小规模）'}`,
               }))}
               suffixIcon={<BankOutlined />}
             />
-            <Button type="text" icon={<LogoutOutlined />} onClick={handleLogout}>
-              退出
-            </Button>
           </Space>
         </Header>
         <Content

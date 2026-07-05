@@ -7,7 +7,7 @@ import {
 import { SaveOutlined, ThunderboltOutlined, ArrowLeftOutlined, FileTextOutlined, PictureOutlined, SearchOutlined } from '@ant-design/icons'
 import { getInvoice, updateInvoice } from '../api/invoices'
 import { generateEntry, createEntry } from '../api/entries'
-import { getDocumentTypes, matchTemplates, generateDraftFromTemplate } from '../api/voucherTemplates'
+import { getDocumentTypes, getVoucherTemplates, recommendTemplate } from '../api/voucherTemplates'
 import { useAppStore } from '../hooks/useAppStore'
 import type { Invoice, DocumentType, VoucherTemplate, PreviewLine } from '../types/invoice'
 import dayjs from 'dayjs'
@@ -38,57 +38,64 @@ export default function InvoiceReview() {
         setLoading(false)
       })
     }
-    getDocumentTypes(true).then(setDocTypes).catch(() => {})
+    getDocumentTypes().then(setDocTypes).catch(() => {})
   }, [id])
 
   // Match templates when selections change
   const handleMatchTemplates = async () => {
     if (!selectedDocTypeId) return
     try {
-      const result = await matchTemplates({
+      const templates = await getVoucherTemplates(selectedDocTypeId)
+      if (templates.length > 0) {
+        setMatchedTemplates(templates)
+        setSelectedTemplate(templates[0])
+      }
+      // Also try recommendation
+      const rec = await recommendTemplate({
+        client_id: currentClient?.id || '',
         document_type_id: selectedDocTypeId,
         settlement_method: settlementMethod,
         business_type: businessType,
-        search_text: invoice?.item_name || invoice?.vendor_name || '',
+        summary: invoice?.item_name || invoice?.vendor_name || '',
+        counterparty_name: invoice?.vendor_name || '',
+        total_amount: invoice?.total_amount || 0,
+        amount: invoice?.amount || 0,
+        tax_amount: invoice?.tax_amount || 0,
       })
-      setMatchedTemplates(result.matched_templates)
-      if (!businessType && result.suggested_business_type) {
-        setBusinessType(result.suggested_business_type)
-      }
-      if (result.matched_templates.length > 0) {
-        setSelectedTemplate(result.matched_templates[0])
+      if (!businessType && rec.business_type) {
+        setBusinessType(rec.business_type)
       }
     } catch { /* ignore */ }
   }
 
-  // Preview entry lines for selected template
-  const handlePreviewDraft = async () => {
-    if (!selectedTemplate || !currentClient || !invoice) return
-    try {
-      const result = await generateDraftFromTemplate({
-        template_id: selectedTemplate.id,
-        client_id: currentClient.id,
-        voucher_date: invoice.invoice_date || dayjs().format('YYYY-MM-DD'),
-        amounts: {
-          total_amount: invoice.total_amount || 0,
-          amount: invoice.amount || 0,
-          tax_amount: invoice.tax_amount || 0,
-        },
-        summary_vars: {
-          counterpartyName: invoice.vendor_name || '',
-          itemName: invoice.item_name || '',
-        },
-        counterparty_name: invoice.vendor_name || undefined,
-        source_invoice_id: invoice.id,
-      })
-      setPreviewLines(result.preview_lines)
-      setTemplateWarnings(result.warnings)
-      if (result.errors.length > 0) {
-        message.error(result.errors.join('; '))
+  // Preview template lines locally
+  const handlePreviewDraft = () => {
+    if (!selectedTemplate || !invoice) return
+    const lines: PreviewLine[] = selectedTemplate.lines.map((l) => {
+      let amount = 0
+      const amt = invoice as any
+      switch (l.amount_source) {
+        case 'totalAmount': amount = amt?.total_amount || 0; break
+        case 'amount': amount = amt?.amount || 0; break
+        case 'taxAmount': amount = amt?.tax_amount || 0; break
       }
-    } catch (err: any) {
-      message.error(err.response?.data?.detail || err.message || '预览失败')
-    }
+      return {
+        line_no: l.line_no,
+        debit_credit: l.debit_credit,
+        account_code: l.account_code,
+        account_name: l.account_name,
+        amount_source: l.amount_source,
+        estimated_amount: amount,
+        require_sub_account: l.require_sub_account,
+        sub_account_match_mode: l.sub_account_match_mode,
+        matched_sub_code: null,
+        matched_sub_name: null,
+        is_pending: l.account_code === 'PENDING' || l.account_code === '__MATCHED_CURRENT__',
+        warning: l.require_sub_account ? '需要匹配往来明细' : null,
+      }
+    })
+    setPreviewLines(lines)
+    setTemplateWarnings([])
   }
 
   const handleFieldUpdate = (field: string, value: any) => {
@@ -136,36 +143,6 @@ export default function InvoiceReview() {
     }
     setGenerating(true)
     try {
-      // Try template engine first if template is selected
-      if (selectedTemplate) {
-        const result = await generateDraftFromTemplate({
-          template_id: selectedTemplate.id,
-          client_id: currentClient.id,
-          voucher_date: invoice.invoice_date || dayjs().format('YYYY-MM-DD'),
-          amounts: {
-            total_amount: invoice.total_amount || 0,
-            amount: invoice.amount || 0,
-            tax_amount: invoice.tax_amount || 0,
-          },
-          summary_vars: {
-            counterpartyName: invoice.vendor_name || '',
-            itemName: invoice.item_name || '',
-          },
-          counterparty_name: invoice.vendor_name || undefined,
-          source_invoice_id: invoice.id,
-        })
-        if (result.errors.length > 0) {
-          message.error(result.errors.join('; '))
-          setGenerating(false)
-          return
-        }
-        if (result.entry_id) {
-          message.success('凭证草稿已生成！')
-          navigate(`/entries/${result.entry_id}/edit`)
-          return
-        }
-      }
-      // Fallback to old method
       const entryData = await generateEntry({
         invoice_id: id,
         client_id: currentClient.id,

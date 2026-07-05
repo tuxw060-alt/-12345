@@ -13,7 +13,7 @@ import EntryList from './pages/EntryList'
 import EntryEditor from './pages/EntryEditor'
 import ClientList from './pages/ClientList'
 import SubjectManager from './pages/SubjectManager'
-import VoucherSettings from './pages/VoucherSettings'
+import AccountingSettings from './pages/AccountingSettings'
 import ExportPage from './pages/ExportPage'
 import Reports from './pages/Reports'
 
@@ -58,7 +58,7 @@ export default function App() {
               <Route path="entries/:id/edit" element={<EntryEditor />} />
               <Route path="clients" element={<ClientList />} />
               <Route path="subjects" element={<SubjectManager />} />
-              <Route path="voucher-settings" element={<VoucherSettings />} />
+              <Route path="accounting-settings" element={<AccountingSettings />} />
               <Route path="export" element={<ExportPage />} />
               <Route path="reports" element={<Reports />} />
             </Route>

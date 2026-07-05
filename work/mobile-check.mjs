@@ -1,11 +1,12 @@
 import { chromium } from 'playwright'
 
+const baseUrl = process.env.PUBLIC_BASE_URL || 'https://txwapis.com'
 const password = process.env.APP_PASSWORD
 if (!password) {
   throw new Error('APP_PASSWORD is required')
 }
 
-const loginRes = await fetch('http://127.0.0.1:8000/api/v1/auth/login', {
+const loginRes = await fetch(`${baseUrl}/api/v1/auth/login`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ password }),
@@ -23,9 +24,9 @@ await page.addInitScript((jwt) => {
   window.localStorage.setItem('token', jwt)
 }, token)
 
-await page.goto('http://127.0.0.1:8000/invoices/upload', { waitUntil: 'networkidle' })
+await page.goto(`${baseUrl}/invoices/upload`, { waitUntil: 'networkidle' })
 await page.screenshot({
-  path: 'C:/Users/PC/Documents/Codex/2026-06-29/http-localhost-8000/outputs/local-upload-mobile-after.png',
+  path: 'C:/Users/PC/Documents/Codex/2026-06-29/txwapis/outputs/upload-mobile-after.png',
   fullPage: true,
 })
 

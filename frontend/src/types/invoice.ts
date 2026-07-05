@@ -48,11 +48,14 @@ export interface AccountSubject {
   full_name: string | null
   level: number
   parent_code: string | null
+  parent_account_name: string | null
   category: string
   direction: 'debit' | 'credit'
   is_leaf: boolean
   is_active: boolean
+  created_from: string | null
   created_at: string
+  updated_at: string | null
 }
 
 export interface SubjectTreeNode {
@@ -60,6 +63,8 @@ export interface SubjectTreeNode {
   name: string
   full_name: string | null
   level: number
+  parent_code: string | null
+  parent_account_name: string | null
   direction: string
   is_leaf: boolean
   children: SubjectTreeNode[]
@@ -85,6 +90,19 @@ export interface JournalEntryLine {
   direction: 'debit' | 'credit'
   amount: number
   summary_detail: string | null
+  account_full_name: string | null
+  parent_account_code: string | null
+  parent_account_name: string | null
+  auxiliary_type: string | null
+  auxiliary_code: string | null
+  auxiliary_name: string | null
+  counterparty_name: string | null
+  counterparty_account: string | null
+  source_type: string | null
+  source_document_id: string | null
+  source_row_id: string | null
+  manual_account_override: boolean
+  account_selection_source: 'auto' | 'manual' | 'rematch' | 'new_sub_account'
 }
 
 export interface JournalEntry {
@@ -114,6 +132,20 @@ export interface BankStatementTransaction {
   balance: number | null
   suggested_subject_code: string | null
   suggested_subject_name: string | null
+  selected_account_code: string | null
+  selected_account_name: string | null
+  selected_account_full_name: string | null
+  selected_parent_account_code: string | null
+  selected_parent_account_name: string | null
+  manual_account_override: boolean
+  account_selection_source: 'auto' | 'manual' | 'rematch' | 'new_sub_account'
+  document_type_id: string | null
+  document_name: string | null
+  settlement_method: string | null
+  business_type: string | null
+  selected_template_id: string | null
+  recommended_template_id: string | null
+  template_match_reason: string | null
   subject_reason: string | null
   confidence: number | null
   status: 'recognized' | 'failed'
@@ -128,6 +160,15 @@ export interface BankStatementUpload {
   filename: string
   status: 'pending' | 'done' | 'failed'
   error_msg: string | null
+  file_type: string | null
+  processing_mode: string | null
+  use_ocr: boolean
+  use_ai: boolean
+  processing_display: string | null
+  processing_description: string | null
+  total_rows: number | null
+  valid_rows: number | null
+  error_rows: number | null
   created_at: string
   transactions: BankStatementTransaction[]
 }
