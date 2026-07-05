@@ -36,6 +36,15 @@ export async function batchUploadBankStatements(
           filename: file.name,
           status: 'failed',
           error_msg: error?.response?.data?.detail || error?.message || '上传失败',
+          file_type: null,
+          processing_mode: null,
+          use_ocr: false,
+          use_ai: false,
+          processing_display: null,
+          processing_description: null,
+          total_rows: null,
+          valid_rows: null,
+          error_rows: null,
           created_at: new Date().toISOString(),
           transactions: [],
         },
@@ -70,10 +79,39 @@ export async function generateBankStatementEntry(transactionId: string) {
   return res.data
 }
 
+export async function updateBankStatementTransactionAccount(
+  transactionId: string,
+  data: {
+    account_code: string
+    account_name: string
+    account_full_name?: string | null
+    parent_account_code?: string | null
+    parent_account_name?: string | null
+    source?: 'manual' | 'rematch' | 'new_sub_account'
+  },
+) {
+  const res = await api.patch(`/bank-statements/transactions/${transactionId}/account-selection`, data)
+  return res.data
+}
+
 export async function generateBankStatementEntries(clientId: string) {
   const res = await api.post<{ entry_ids: string[]; generated: number }>(
     '/bank-statements/generate-entries',
     { client_id: clientId },
   )
+  return res.data
+}
+
+export async function updateBankStatementTransactionTemplate(
+  transactionId: string,
+  data: {
+    document_type_id?: string | null
+    document_name?: string | null
+    settlement_method?: string | null
+    business_type?: string | null
+    template_id?: string | null
+  },
+) {
+  const res = await api.patch(`/bank-statements/transactions/${transactionId}/template-selection`, data)
   return res.data
 }

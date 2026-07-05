@@ -35,8 +35,10 @@ KINGDEE_HEADERS = [
     "供应商",
 ]
 
-CUSTOMER_ACCOUNT_PREFIXES = ("1122",)
-SUPPLIER_ACCOUNT_PREFIXES = ("2202", "2241")
+CUSTOMER_ACCOUNT_PREFIXES = ("1122", "1123", "1221")
+SUPPLIER_ACCOUNT_PREFIXES = ("2202", "2203", "2241")
+BANK_ACCOUNT_PREFIXES = ("1001", "1002", "100201")
+GENERIC_COUNTERPARTY_VALUES = {"", "支付", "收付", "银行流水", "销售", "付款", "收款"}
 AUX_REGISTRY_FILE = "kingdee_auxiliary_registry.json"
 TEMPLATE_PATH = (
     Path(__file__).resolve().parent.parent.parent
@@ -74,8 +76,38 @@ def _normalize_aux_name(name: str) -> str:
     return re.sub(r"\s+", "", name.strip())
 
 
+def _clean_counterparty(value: str | None) -> str:
+    if not value:
+        return ""
+    return " ".join(str(value).replace("\n", " ").replace("\r", " ").split())[:200]
+
+
+def _entry_counterparty(entry: JournalEntry) -> str:
+    for line in entry.lines:
+        counterparty = _clean_counterparty(getattr(line, "counterparty_name", None))
+        if counterparty and counterparty not in GENERIC_COUNTERPARTY_VALUES:
+            return counterparty
+
+    for line in entry.lines:
+        if not line.account_code.startswith(BANK_ACCOUNT_PREFIXES):
+            continue
+        counterparty = _clean_counterparty(line.summary_detail)
+        if counterparty and counterparty not in GENERIC_COUNTERPARTY_VALUES:
+            return counterparty
+
+    summary = _clean_counterparty(entry.summary)
+    parenthesized = re.search(r"\(([^()]+)\)\s*$", summary)
+    if parenthesized:
+        return _clean_counterparty(parenthesized.group(1))
+    if " - " in summary:
+        return _clean_counterparty(summary.rsplit(" - ", 1)[1])
+    return ""
+
+
 def _extract_aux_name(line: JournalEntryLine) -> str | None:
     """Return the auxiliary name embedded in account name, e.g. 应收账款_某公司."""
+    if getattr(line, "auxiliary_name", None):
+        return _clean_counterparty(line.auxiliary_name)
     for sep in ("_", "＿"):
         if sep in line.account_name:
             name = line.account_name.rsplit(sep, 1)[-1].strip()
@@ -218,6 +250,7 @@ def generate_kingdee_excel(
     for entry in entries:
         voucher_date_str = entry.voucher_date.isoformat() if entry.voucher_date else ""
         voucher_number = entry.voucher_number or ""
+        entry_counterparty = _entry_counterparty(entry)
 
         for line_index, line in enumerate(entry.lines, 1):
             if row != DATA_START_ROW:
@@ -232,7 +265,7 @@ def generate_kingdee_excel(
             account_cell = ws.cell(row=row, column=6, value=line.account_code)
             account_cell.number_format = "@"  # Text format
 
-            ws.cell(row=row, column=7, value=line.account_name)
+            ws.cell(row=row, column=7, value=line.account_full_name or line.account_name)
 
             # Debit / Credit amounts
             if line.direction == "debit":
@@ -244,6 +277,9 @@ def generate_kingdee_excel(
 
             category = _aux_category(line.account_code)
             aux_name = _extract_aux_name(line)
+            if not category and entry_counterparty and not line.account_code.startswith(BANK_ACCOUNT_PREFIXES):
+                category = "客户" if line.direction == "credit" else "供应商"
+                aux_name = entry_counterparty
             if category and aux_name:
                 aux_code = _get_aux_code(aux_registry, entry.client_id, category, aux_name)
                 registry_changed = True

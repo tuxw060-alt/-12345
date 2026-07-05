@@ -24,6 +24,7 @@ const menuItems = [
   { key: '/bank-statements/upload', icon: <BankOutlined />, label: '银行流水' },
   { key: '/entries', icon: <FileTextOutlined />, label: '记账凭证' },
   { key: '/subjects', icon: <BookOutlined />, label: '科目规则' },
+  { key: '/accounting-settings', icon: <AuditOutlined />, label: '会计工作' },
   { key: '/clients', icon: <TeamOutlined />, label: '客户管理' },
   { key: '/export', icon: <ExportOutlined />, label: '金蝶导出' },
   { key: '/reports', icon: <BarChartOutlined />, label: '财务报表' },
@@ -55,7 +56,7 @@ export default function AppLayout() {
   const selectedKey = location.pathname.startsWith('/bank-statements')
     ? '/bank-statements/upload'
     : '/' + location.pathname.split('/')[1]
-  const currentMenu = menuItems.find((m) => m.key === selectedKey) || menuItems[0]
+  const currentMenu = menuItems.find((item) => item.key === selectedKey) || menuItems[0]
 
   return (
     <Layout className="app-shell">
@@ -73,7 +74,7 @@ export default function AppLayout() {
           <span className="app-brand-mark">快</span>
           {!collapsed && (
             <span>
-              <strong>快记帐</strong>
+              <strong>快记账</strong>
               <small>AI Accounting Copilot</small>
             </span>
           )}
@@ -88,7 +89,7 @@ export default function AppLayout() {
         {!collapsed && (
           <div className="sider-note">
             <AuditOutlined />
-            <span>发票识别、凭证复核、金蝶导出，一条流程闭环。</span>
+            <span>发票、流水、凭证、报表，一套流程闭环处理。</span>
           </div>
         )}
       </Sider>
@@ -116,8 +117,8 @@ export default function AppLayout() {
               onOpenChange={(open) => {
                 if (open) refreshClientOptions()
               }}
-              onChange={(val) => {
-                const client = clients.find((x) => x.id === val) || null
+              onChange={(value) => {
+                const client = clients.find((item) => item.id === value) || null
                 setCurrentClient(client)
               }}
               options={clients.map((client) => ({

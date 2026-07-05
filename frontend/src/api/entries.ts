@@ -23,6 +23,19 @@ export interface EntryCreateData {
     direction: 'debit' | 'credit'
     amount: number
     summary_detail?: string
+    account_full_name?: string | null
+    parent_account_code?: string | null
+    parent_account_name?: string | null
+    auxiliary_type?: string | null
+    auxiliary_code?: string | null
+    auxiliary_name?: string | null
+    counterparty_name?: string | null
+    counterparty_account?: string | null
+    source_type?: string | null
+    source_document_id?: string | null
+    source_row_id?: string | null
+    manual_account_override?: boolean
+    account_selection_source?: 'auto' | 'manual' | 'rematch' | 'new_sub_account'
   }[]
 }
 

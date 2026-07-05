@@ -78,6 +78,11 @@ async def lifespan(app: FastAPI):
                         direction=direction, amount_source="manual"))
                 await s2.flush()
             await s2.commit()
+    async with async_session() as s3:
+        from app.services.document_voucher_service import seed_default_document_voucher_config
+
+        await seed_default_document_voucher_config(s3)
+        await s3.commit()
     yield
 
 
@@ -92,6 +97,7 @@ app = FastAPI(
 from app.routers import (
     clients, subjects, matching_rules, invoices, entries,
     export_routes, reports, auth, templates, tax, bank, bank_statements,
+    document_vouchers,
 )
 app.include_router(auth.router)
 app.include_router(clients.router)
@@ -105,6 +111,7 @@ app.include_router(reports.router)
 app.include_router(templates.router)
 app.include_router(tax.router)
 app.include_router(bank.router)
+app.include_router(document_vouchers.router)
 
 
 @app.get("/api/v1/health")

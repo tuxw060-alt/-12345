@@ -15,6 +15,7 @@ from app.schemas.journal_entry import (
     EntryGenerateResponse,
 )
 from app.services import entry_service, invoice_service, client_service
+from app.services.entry_service import EntryValidationError
 from app.services.entry_generator import generate_entry_from_invoice
 
 router = APIRouter(prefix="/api/v1/entries", tags=["entries"])
@@ -101,7 +102,10 @@ async def confirm_entry(entry_id: str, db: AsyncSession = Depends(get_db)):
     entry = await entry_service.get_entry(db, entry_id)
     if not entry:
         raise HTTPException(status_code=404, detail="凭证不存在")
-    entry = await entry_service.confirm_entry(db, entry)
+    try:
+        entry = await entry_service.confirm_entry(db, entry)
+    except EntryValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return EntryResponse.model_validate(entry)
 
 
@@ -124,6 +128,8 @@ async def batch_confirm(
         try:
             await entry_service.confirm_entry(db, entry)
             confirmed.append(eid)
+        except EntryValidationError as e:
+            failed.append({"id": eid, "reason": str(e)})
         except Exception as e:
             failed.append({"id": eid, "reason": str(e)})
     return {"confirmed": len(confirmed), "failed": failed}

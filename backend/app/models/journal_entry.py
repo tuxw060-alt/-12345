@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import date, datetime
-from sqlalchemy import String, Integer, Date, Numeric, DateTime, ForeignKey, Text, func
+from sqlalchemy import Boolean, String, Integer, Date, Numeric, DateTime, ForeignKey, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -66,6 +66,20 @@ class JournalEntryLine(Base):
     summary_detail: Mapped[str | None] = mapped_column(
         String(200), nullable=True, comment="分行业务说明"
     )
+
+    account_full_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    parent_account_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    parent_account_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    auxiliary_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    auxiliary_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    auxiliary_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    counterparty_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    counterparty_account: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    source_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    source_document_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    source_row_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    manual_account_override: Mapped[bool] = mapped_column(Boolean, default=False)
+    account_selection_source: Mapped[str] = mapped_column(String(30), default="auto")
 
     # Relationships
     entry = relationship("JournalEntry", back_populates="lines")
