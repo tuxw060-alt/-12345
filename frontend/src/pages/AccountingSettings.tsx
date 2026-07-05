@@ -92,8 +92,10 @@ export default function AccountingSettings() {
         listDocumentTypes(companyId),
         listVoucherTemplates({ company_id: companyId }),
       ])
-      setDocumentTypes(docs.items)
-      setTemplates(tpl.items)
+      setDocumentTypes(docs?.items || [])
+      setTemplates(tpl?.items || [])
+    } catch {
+      message.error('加载票据设置失败，请检查网络连接')
     } finally {
       setLoading(false)
     }
@@ -102,7 +104,7 @@ export default function AccountingSettings() {
   useEffect(() => { refresh() }, [companyId])
 
   const documentOptions = useMemo(
-    () => documentTypes.filter((item) => item.is_enabled).map((item) => ({ value: item.id, label: item.name, item })),
+    () => (documentTypes || []).filter((item) => item.is_enabled).map((item) => ({ value: item.id, label: item.name, item })),
     [documentTypes],
   )
 
