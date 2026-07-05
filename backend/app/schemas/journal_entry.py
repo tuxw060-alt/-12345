@@ -11,6 +11,9 @@ class EntryLineBase(BaseModel):
     direction: str = Field(..., description="debit(借) 或 credit(贷)")
     amount: float = Field(..., gt=0, description="金额")
     summary_detail: str | None = None
+    manual_account_override: bool = Field(
+        default=False, description="用户是否手动修改过科目(模板/规则不可自动覆盖)"
+    )
 
 
 class EntryLineCreate(EntryLineBase):

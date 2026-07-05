@@ -132,6 +132,76 @@ export interface BankStatementUpload {
   transactions: BankStatementTransaction[]
 }
 
+// Document Type
+export interface DocumentType {
+  id: string
+  company_id: string | null
+  code: string
+  category: string
+  name: string
+  is_system: boolean
+  is_enabled: boolean
+  created_at: string
+  updated_at: string | null
+}
+
+// Voucher Template
+export interface VoucherTemplateLine {
+  id: string
+  template_id: string
+  line_no: number
+  debit_credit: 'debit' | 'credit'
+  account_code: string
+  account_name: string
+  account_full_name: string | null
+  parent_account_code: string | null
+  amount_source: string
+  require_sub_account: boolean
+  sub_account_match_mode: string
+  allow_manual_edit: boolean
+  created_at: string
+  updated_at: string | null
+}
+
+export interface VoucherTemplate {
+  id: string
+  company_id: string | null
+  document_type_id: string | null
+  document_name: string
+  settlement_method: string
+  business_type: string
+  summary_template: string
+  is_enabled: boolean
+  priority: number
+  created_from: string
+  lines: VoucherTemplateLine[]
+  created_at: string
+  updated_at: string | null
+}
+
+export interface PreviewLine {
+  line_no: number
+  debit_credit: string
+  account_code: string
+  account_name: string
+  amount_source: string
+  estimated_amount: number
+  require_sub_account: boolean
+  sub_account_match_mode: string
+  matched_sub_code: string | null
+  matched_sub_name: string | null
+  is_pending: boolean
+  warning: string | null
+}
+
+export interface GenerateDraftResponse {
+  entry_id: string | null
+  status: string
+  preview_lines: PreviewLine[]
+  warnings: string[]
+  errors: string[]
+}
+
 // API list responses
 export interface ListResponse<T> {
   items: T[]

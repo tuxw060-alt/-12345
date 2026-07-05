@@ -101,7 +101,10 @@ async def confirm_entry(entry_id: str, db: AsyncSession = Depends(get_db)):
     entry = await entry_service.get_entry(db, entry_id)
     if not entry:
         raise HTTPException(status_code=404, detail="凭证不存在")
-    entry = await entry_service.confirm_entry(db, entry)
+    try:
+        entry = await entry_service.confirm_entry(db, entry)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return EntryResponse.model_validate(entry)
 
 

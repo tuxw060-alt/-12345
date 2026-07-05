@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Card, Descriptions, Button, Space, Typography, Tag, Input, InputNumber,
-  DatePicker, Select, Spin, message, Row, Col, Alert, Tabs,
+  DatePicker, Select, Spin, message, Row, Col, Alert, Tabs, Table, Divider,
 } from 'antd'
-import { SaveOutlined, ThunderboltOutlined, ArrowLeftOutlined, FileTextOutlined, PictureOutlined } from '@ant-design/icons'
+import { SaveOutlined, ThunderboltOutlined, ArrowLeftOutlined, FileTextOutlined, PictureOutlined, SearchOutlined } from '@ant-design/icons'
 import { getInvoice, updateInvoice } from '../api/invoices'
 import { generateEntry, createEntry } from '../api/entries'
+import { getDocumentTypes, matchTemplates, generateDraftFromTemplate } from '../api/voucherTemplates'
 import { useAppStore } from '../hooks/useAppStore'
-import type { Invoice } from '../types/invoice'
+import type { Invoice, DocumentType, VoucherTemplate, PreviewLine } from '../types/invoice'
 import dayjs from 'dayjs'
 
 export default function InvoiceReview() {
@@ -20,6 +21,16 @@ export default function InvoiceReview() {
   const { currentClient } = useAppStore()
   const navigate = useNavigate()
 
+  // Template-related state
+  const [docTypes, setDocTypes] = useState<DocumentType[]>([])
+  const [selectedDocTypeId, setSelectedDocTypeId] = useState<string | undefined>()
+  const [settlementMethod, setSettlementMethod] = useState<string>('往来结算')
+  const [businessType, setBusinessType] = useState<string | undefined>()
+  const [matchedTemplates, setMatchedTemplates] = useState<VoucherTemplate[]>([])
+  const [selectedTemplate, setSelectedTemplate] = useState<VoucherTemplate | null>(null)
+  const [previewLines, setPreviewLines] = useState<PreviewLine[]>([])
+  const [templateWarnings, setTemplateWarnings] = useState<string[]>([])
+
   useEffect(() => {
     if (id) {
       getInvoice(id).then((data) => {
@@ -27,7 +38,58 @@ export default function InvoiceReview() {
         setLoading(false)
       })
     }
+    getDocumentTypes(true).then(setDocTypes).catch(() => {})
   }, [id])
+
+  // Match templates when selections change
+  const handleMatchTemplates = async () => {
+    if (!selectedDocTypeId) return
+    try {
+      const result = await matchTemplates({
+        document_type_id: selectedDocTypeId,
+        settlement_method: settlementMethod,
+        business_type: businessType,
+        search_text: invoice?.item_name || invoice?.vendor_name || '',
+      })
+      setMatchedTemplates(result.matched_templates)
+      if (!businessType && result.suggested_business_type) {
+        setBusinessType(result.suggested_business_type)
+      }
+      if (result.matched_templates.length > 0) {
+        setSelectedTemplate(result.matched_templates[0])
+      }
+    } catch { /* ignore */ }
+  }
+
+  // Preview entry lines for selected template
+  const handlePreviewDraft = async () => {
+    if (!selectedTemplate || !currentClient || !invoice) return
+    try {
+      const result = await generateDraftFromTemplate({
+        template_id: selectedTemplate.id,
+        client_id: currentClient.id,
+        voucher_date: invoice.invoice_date || dayjs().format('YYYY-MM-DD'),
+        amounts: {
+          total_amount: invoice.total_amount || 0,
+          amount: invoice.amount || 0,
+          tax_amount: invoice.tax_amount || 0,
+        },
+        summary_vars: {
+          counterpartyName: invoice.vendor_name || '',
+          itemName: invoice.item_name || '',
+        },
+        counterparty_name: invoice.vendor_name || undefined,
+        source_invoice_id: invoice.id,
+      })
+      setPreviewLines(result.preview_lines)
+      setTemplateWarnings(result.warnings)
+      if (result.errors.length > 0) {
+        message.error(result.errors.join('; '))
+      }
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || err.message || '预览失败')
+    }
+  }
 
   const handleFieldUpdate = (field: string, value: any) => {
     if (!invoice) return
@@ -74,6 +136,36 @@ export default function InvoiceReview() {
     }
     setGenerating(true)
     try {
+      // Try template engine first if template is selected
+      if (selectedTemplate) {
+        const result = await generateDraftFromTemplate({
+          template_id: selectedTemplate.id,
+          client_id: currentClient.id,
+          voucher_date: invoice.invoice_date || dayjs().format('YYYY-MM-DD'),
+          amounts: {
+            total_amount: invoice.total_amount || 0,
+            amount: invoice.amount || 0,
+            tax_amount: invoice.tax_amount || 0,
+          },
+          summary_vars: {
+            counterpartyName: invoice.vendor_name || '',
+            itemName: invoice.item_name || '',
+          },
+          counterparty_name: invoice.vendor_name || undefined,
+          source_invoice_id: invoice.id,
+        })
+        if (result.errors.length > 0) {
+          message.error(result.errors.join('; '))
+          setGenerating(false)
+          return
+        }
+        if (result.entry_id) {
+          message.success('凭证草稿已生成！')
+          navigate(`/entries/${result.entry_id}/edit`)
+          return
+        }
+      }
+      // Fallback to old method
       const entryData = await generateEntry({
         invoice_id: id,
         client_id: currentClient.id,
@@ -199,6 +291,86 @@ export default function InvoiceReview() {
             </Space>
           </Card>
 
+          {/* Template Configuration */}
+          <Card title="分录模板配置" size="small" style={{ marginBottom: 12, borderLeft: '3px solid #52c41a' }}>
+            <Space direction="vertical" style={{ width: '100%' }} size={8}>
+              <Space wrap>
+                <Select placeholder="单据名称" style={{ width: 180 }}
+                  value={selectedDocTypeId}
+                  onChange={(v) => { setSelectedDocTypeId(v); setSelectedTemplate(null); setPreviewLines([]) }}
+                  options={docTypes.map(d => ({ value: d.id, label: `${d.code} ${d.name}` }))}
+                />
+                <Select placeholder="结算方式" style={{ width: 120 }}
+                  value={settlementMethod} onChange={setSettlementMethod}
+                  options={['往来结算','现金','银行','未结算','其他'].map(v=>({value:v,label:v}))}
+                />
+                <Select placeholder="业务类型" style={{ width: 140 }}
+                  value={businessType} onChange={setBusinessType}
+                  showSearch
+                  options={['销售收入','采购商品','福利费','运杂费','服务费','办公用品','业务招待费','交通费','利息','手续费','税费缴纳','还款','往来款','银行收款','银行付款','利息收入'].map(v=>({value:v,label:v}))}
+                />
+                <Button icon={<SearchOutlined />} onClick={handleMatchTemplates} size="small">
+                  匹配模板
+                </Button>
+              </Space>
+
+              {matchedTemplates.length > 0 && (
+                <>
+                  <Select placeholder="选择模板" style={{ width: '100%' }}
+                    value={selectedTemplate?.id}
+                    onChange={(v) => {
+                      const tpl = matchedTemplates.find(t => t.id === v)
+                      setSelectedTemplate(tpl || null)
+                      setPreviewLines([])
+                    }}
+                    options={matchedTemplates.map(t => ({
+                      value: t.id,
+                      label: `${t.document_name} / ${t.business_type} / ${t.settlement_method} [${t.summary_template}]`,
+                    }))}
+                  />
+                  {selectedTemplate && (
+                    <Button type="dashed" size="small" onClick={handlePreviewDraft}>
+                      预览分录
+                    </Button>
+                  )}
+                </>
+              )}
+
+              {previewLines.length > 0 && (
+                <>
+                  <Divider style={{ margin: '8px 0' }} />
+                  <Typography.Text strong>分录预览：</Typography.Text>
+                  <Table
+                    dataSource={previewLines}
+                    rowKey="line_no"
+                    size="small"
+                    pagination={false}
+                    columns={[
+                      { title: '#', dataIndex: 'line_no', width: 40 },
+                      { title: '方向', dataIndex: 'debit_credit', width: 50,
+                        render: (v: string) => <Tag color={v==='debit'?'blue':'red'}>{v==='debit'?'借':'贷'}</Tag> },
+                      { title: '科目', key: 'acct', render: (_: any, r: PreviewLine) => (
+                        <span>
+                          <span style={{fontFamily:'monospace'}}>{r.account_code}</span>
+                          {' '}{r.account_name}
+                          {r.is_pending && <Tag color="orange" style={{marginLeft:4}}>待选择</Tag>}
+                          {r.matched_sub_code && <Tag color="green" style={{marginLeft:4}}>{r.matched_sub_code}</Tag>}
+                        </span>
+                      )},
+                      { title: '金额来源', dataIndex: 'amount_source', width: 100 },
+                      { title: '预计金额', dataIndex: 'estimated_amount', width: 100,
+                        render: (v:number)=>`¥${v.toFixed(2)}` },
+                    ]}
+                  />
+                  {templateWarnings.length > 0 && (
+                    <Alert type="warning" message={templateWarnings.map((w,i)=><div key={i}>{w}</div>)}
+                      style={{marginTop:8}} />
+                  )}
+                </>
+              )}
+            </Space>
+          </Card>
+
           {/* Actions */}
           <Space direction="vertical" style={{ width: '100%' }}>
             <Button type="primary" icon={<SaveOutlined />} block onClick={handleSave} loading={saving}>
@@ -206,7 +378,7 @@ export default function InvoiceReview() {
             </Button>
             <Button icon={<ThunderboltOutlined />} block onClick={handleGenerateEntry}
               loading={generating} style={{ background: '#52c41a', borderColor: '#52c41a', color: '#fff' }}>
-              一键生成记账凭证
+              {selectedTemplate ? '按模板生成凭证草稿' : '一键生成记账凭证'}
             </Button>
           </Space>
         </Col>

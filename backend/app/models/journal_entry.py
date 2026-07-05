@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import date, datetime
-from sqlalchemy import String, Integer, Date, Numeric, DateTime, ForeignKey, Text, func
+from sqlalchemy import String, Integer, Boolean, Date, Numeric, DateTime, ForeignKey, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -65,6 +65,9 @@ class JournalEntryLine(Base):
     amount: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, comment="金额")
     summary_detail: Mapped[str | None] = mapped_column(
         String(200), nullable=True, comment="分行业务说明"
+    )
+    manual_account_override: Mapped[bool] = mapped_column(
+        Boolean, default=False, comment="用户是否手动修改过科目(模板/规则不可自动覆盖)"
     )
 
     # Relationships

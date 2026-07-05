@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Card, Table, Button, Space, Typography, Input, DatePicker,
-  Select, InputNumber, message, Tag, Popconfirm, Row, Col,
+  Select, InputNumber, message, Tag, Popconfirm, Row, Col, Modal,
 } from 'antd'
 import {
   SaveOutlined, PlusOutlined, DeleteOutlined, ArrowLeftOutlined,
@@ -20,6 +20,13 @@ export default function EntryEditor() {
   const [loading, setLoading] = useState(true)
   const [subjects, setSubjects] = useState<SubjectTreeNode[]>([])
   const [saving, setSaving] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+
+  // Track manual account overrides
+  const [manualOverrides, setManualOverrides] = useState<Set<string>>(new Set())
+
+  // Parent-level receivable/payable codes that can't be used directly
+  const PARENT_CODES = new Set(['1122','1123','1221','2202','2203','2241'])
 
   useEffect(() => {
     if (id) {
@@ -111,14 +118,60 @@ export default function EntryEditor() {
     }
   }
 
+  const validateBeforeConfirm = (): string[] => {
+    if (!entry) return []
+    const errors: string[] = []
+    const debitTotal = entry.lines.filter(l => l.direction === 'debit').reduce((s, l) => s + l.amount, 0)
+    const creditTotal = entry.lines.filter(l => l.direction === 'credit').reduce((s, l) => s + l.amount, 0)
+    const diff = Math.abs(debitTotal - creditTotal)
+
+    if (diff > 0.01) {
+      errors.push(`借贷不平衡：借方¥${debitTotal.toFixed(2)}，贷方¥${creditTotal.toFixed(2)}，差额¥${diff.toFixed(2)}，不能确认凭证`)
+    }
+
+    for (const line of entry.lines) {
+      const prefix = `第${line.line_number}行`
+      if (!line.account_code || line.account_code.trim() === '') {
+        errors.push(`${prefix}科目为空，不能确认`)
+        continue
+      }
+      if (line.account_code === 'PENDING') {
+        errors.push(`${prefix}待选择科目，不能确认凭证`)
+        continue
+      }
+      // Check parent-level receivable/payable
+      if (PARENT_CODES.has(line.account_code)) {
+        errors.push(`${prefix}仍使用父级往来科目${line.account_code}「${line.account_name}」，请选择客户/供应商明细`)
+      }
+    }
+    return errors
+  }
+
   const handleConfirm = async () => {
     if (!entry || !id) return
+    // Frontend validation
+    const errors = validateBeforeConfirm()
+    if (errors.length > 0) {
+      Modal.error({
+        title: '凭证校验未通过',
+        content: (
+          <div>
+            {errors.map((e, i) => <div key={i} style={{ color: '#ff4d4f', marginBottom: 4 }}>• {e}</div>)}
+          </div>
+        ),
+      })
+      return
+    }
+
+    setConfirming(true)
     try {
       await confirmEntry(id)
       message.success('凭证已确认，可以导出了')
       navigate('/entries')
     } catch (err: any) {
-      message.error(`确认失败: ${err.message}`)
+      message.error(`确认失败: ${err.response?.data?.detail || err.message}`)
+    } finally {
+      setConfirming(false)
     }
   }
 
@@ -144,6 +197,8 @@ export default function EntryEditor() {
             const found = subjectOptions.find((o) => o.value === v)
             handleLineChange(record.id, 'account_code', v)
             handleLineChange(record.id, 'account_name', found?.label?.split(' ').slice(1).join(' ') || '')
+            // Mark as manual override
+            setManualOverrides(prev => new Set(prev).add(record.id))
           }}
           options={subjectOptions}
           style={{ width: '100%' }}
@@ -296,6 +351,7 @@ export default function EntryEditor() {
             icon={<CheckOutlined />}
             onClick={handleConfirm}
             disabled={!balanced}
+            loading={confirming}
             style={{ background: '#52c41a', borderColor: '#52c41a', color: '#fff' }}
           >
             确认凭证
