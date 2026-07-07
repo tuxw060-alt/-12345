@@ -1,7 +1,7 @@
-﻿"""JournalEntry CRUD service."""
+"""JournalEntry CRUD service."""
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import inspect, select, func, update
@@ -100,12 +100,15 @@ async def _entry_lines(db: AsyncSession, entry: JournalEntry) -> list[JournalEnt
 
 
 def _line_values(line_data) -> dict:
+    debit_value = round(float(line_data.debitAmount or 0), 2)
+    credit_value = round(float(line_data.creditAmount or 0), 2)
+    amount = credit_value if line_data.direction == "credit" else debit_value
     return {
         "line_number": line_data.line_number,
         "account_code": line_data.account_code,
         "account_name": line_data.account_name,
         "direction": line_data.direction,
-        "amount": line_data.amount,
+        "amount": amount,
         "summary_detail": line_data.summary_detail,
         "account_full_name": line_data.account_full_name,
         "parent_account_code": line_data.parent_account_code,
@@ -178,6 +181,7 @@ async def create_entry(db: AsyncSession, data: EntryCreate) -> JournalEntry:
         voucher_number=data.voucher_number,
         summary=data.summary,
         status="draft",
+        source_row_ids=data.sourceRowIds or None,
     )
     db.add(entry)
 
@@ -202,6 +206,8 @@ async def update_entry(
         value = getattr(data, field, None)
         if value is not None:
             setattr(entry, field, value)
+    if data.sourceRowIds is not None:
+        entry.source_row_ids = data.sourceRowIds or None
 
     # Update lines: delete old, insert new
     if data.lines is not None:
@@ -295,8 +301,9 @@ async def confirm_entry(db: AsyncSession, entry: JournalEntry) -> JournalEntry:
     await repair_entry_legacy_accounts(db, entry)
     await validate_entry_for_confirm(db, entry)
     entry.status = "confirmed"
-    from datetime import datetime
-    entry.updated_at = datetime.now()
+    now = datetime.now()
+    entry.confirmed_at = now
+    entry.updated_at = now
     await db.flush()
     # Re-fetch with eager-loaded lines to avoid greenlet issues
     return await get_entry(db, entry.id)
@@ -306,7 +313,7 @@ async def delete_entry(db: AsyncSession, entry: JournalEntry) -> None:
     await db.execute(
         update(BankStatementTransaction)
         .where(BankStatementTransaction.entry_id == entry.id)
-        .values(entry_id=None)
+        .values(entry_id=None, status="recognized")
     )
     await db.delete(entry)
     await db.flush()

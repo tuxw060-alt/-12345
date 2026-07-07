@@ -104,8 +104,20 @@ def _set_upload_processing(upload: BankStatementUpload, mode: dict[str, Any]) ->
 
 
 def _is_bank_fee(summary: str | None) -> bool:
+    """Check if a transaction summary indicates a bank fee.
+
+    NOTE: "服务费" is intentionally excluded — it's too broad and would
+    falsely match non-fee service transactions. Only bank-specific fee
+    keywords are matched.
+    """
     text = (summary or "").lower()
-    return any(keyword in text for keyword in ("手续费", "服务费", "银行收费", "对公收费", "账户管理费", "短信费", "网银服务费"))
+    return any(keyword in text for keyword in (
+        "手续费", "手續費", "银行收费", "对公收费", "對公收費",
+        "账户管理费", "賬戶管理費", "短信费", "网银服务费", "網銀服務費",
+        "汇款费", "转账费", "电子汇划费", "電子匯劃費",
+        "回单", "对公账户", "对公維護", "扣费", "扣費",
+        "560301", "5603.02",
+    ))
 
 
 def _raw_value(tx: BankStatementTransaction, key: str) -> Any:
@@ -139,9 +151,9 @@ def normalize_account_name(name: str | None, auxiliary_name: str | None, account
         return account_name
     underscore_suffix = f"_{aux_name}"
     if account_name.endswith(underscore_suffix):
-        return account_name[: -len(underscore_suffix)].rstrip("_＿ -")
+        return account_name[: -len(underscore_suffix)].rstrip("_锛?-")
     if account_name.endswith(aux_name):
-        return account_name[: -len(aux_name)].rstrip("_＿ -")
+        return account_name[: -len(aux_name)].rstrip("_锛?-")
     return account_name
 
 
@@ -274,12 +286,12 @@ def _selected_account_fields(tx: BankStatementTransaction, is_income: bool) -> d
 def map_bank_statement_columns(headers: list[Any]) -> dict[str, Any]:
     normalized = [str(item or "").strip().lower().replace(" ", "") for item in headers]
     aliases: dict[str, tuple[str, ...]] = {
-        "transactionDate": ("日期", "交易日期", "记账日期", "入账日期", "交易时间", "交易日期时间", "date"),
-        "summary": ("摘要", "交易摘要", "用途", "交易用途", "备注", "附言", "交易附言", "desc", "memo"),
-        "counterpartyName": ("对方户名", "对方名称", "对方账户名称", "对方单位", "对手方", "收款人", "付款人", "收款方", "付款方", "交易对方", "counterparty"),
-        "counterpartyAccount": ("对方账号", "对方账户", "对方账户号", "收款账号", "付款账号", "对手方账号", "账号", "account"),
-        "incomeAmount": ("收入", "收入金额", "贷方发生额", "收方金额", "入账金额", "收入发生额", "贷方"),
-        "expenseAmount": ("支出", "支出金额", "借方发生额", "付方金额", "出账金额", "支出发生额", "借方"),
+        "transactionDate": ("日期", "交易日期", "记账日期", "入账日期", "交易时间", "date"),
+        "summary": ("摘要", "交易摘要", "用途", "交易用途", "备注", "附言", "desc", "memo"),
+        "counterpartyName": ("对方户名", "对方名称", "对方账户名称", "对方单位", "交易对方", "counterparty"),
+        "counterpartyAccount": ("对方账号", "对方账户", "账号", "account"),
+        "incomeAmount": ("收入", "收入金额", "贷方发生额", "收方金额", "入账金额", "贷方"),
+        "expenseAmount": ("支出", "支出金额", "借方发生额", "付方金额", "出账金额", "借方"),
         "balance": ("余额", "账户余额", "当前余额", "balance"),
         "serialNo": ("流水号", "交易流水号", "交易编号", "凭证号", "回单编号"),
         "purpose": ("用途", "交易用途", "附言", "备注"),
@@ -349,7 +361,7 @@ def _clean_party_name(counterparty: str | None) -> str:
     party = (counterparty or "").strip()
     if not party:
         return ""
-    if re.fullmatch(r"[\d,.\-+￥¥\s:]+", party):
+    if re.fullmatch(r"[\d,.\-+\s:]+", party):
         return ""
     bank_noise = ("银行", "银联", "财付通", "支付宝", "微信支付")
     if any(word in party for word in bank_noise) and len(party) <= 12:
@@ -375,7 +387,7 @@ def _extract_ods_rows(path: Path) -> list[list[Any]]:
     for table in root.findall(".//table:table", namespaces):
         table_name = table.attrib.get(f"{table_ns}name")
         if table_name:
-            rows.append([f"工作表 {table_name}"])
+            rows.append([f"宸ヤ綔琛?{table_name}"])
         for row in table.findall("table:table-row", namespaces):
             repeat_rows = min(int(row.attrib.get(f"{table_ns}number-rows-repeated", "1")), 500)
             values: list[Any] = []
@@ -407,50 +419,38 @@ def _guess_subject(
     counterparty: str | None,
     is_income: bool,
 ) -> tuple[str, str, str]:
-    text = f"{summary or ''} {counterparty or ''}".lower()
-
-    liability_keywords = (
-        "借款", "还款", "往来款", "往来", "代垫", "垫付", "暂借", "归还",
-        "借入", "借支", "备用金", "拆借",
-    )
-    if any(keyword in text for keyword in liability_keywords):
+    text = f"{summary or ""} {counterparty or ""}".lower()
+    if _is_bank_fee(text):
+        return "560301", "财务费用-手续费", "手续费"
+    if any(keyword in text for keyword in ("还款", "往来款", "借款", "归还", "代垫", "备用金")):
         party = _clean_party_name(counterparty)
-        subject_name = f"其他应付款_{party}" if party else "其他应付款"
-        return "2241", subject_name, "借款/往来款走负债科目：借方减少，贷方增加"
-
-    loan_keywords = ("贷款", "银行借款", "借款本金")
-    if any(keyword in text for keyword in loan_keywords):
-        return "2001", "短期借款", "银行贷款负债：借方减少，贷方增加"
-
+        return "2241", f"其他应付款_{party}" if party else "其他应付款", "往来款"
+    if any(keyword in text for keyword in ("贷款", "银行借款", "借款本金")):
+        return "2001", "短期借款", "银行贷款"
     if is_income:
         if any(keyword in text for keyword in ("利息", "结息")):
-            return "5603.03", "财务费用-利息收入", "利息收入"
+            return "560303", "财务费用-利息收入", "利息收入"
         party = _clean_party_name(counterparty)
-        subject_name = f"应收账款_{party}" if party else "应收账款"
-        return "1122", subject_name, "银行收款默认冲应收账款，需人工复核"
-
+        return "1122", f"应收账款_{party}" if party else "应收账款", "银行收款"
     rules = [
-        (("手续费", "账户管理", "网银", "电子汇划费", "短信费"), "5603.02", "财务费用-手续费", "银行费用"),
-        (("利息",), "5603.03" if is_income else "5603.01", "财务费用-利息收入" if is_income else "财务费用-利息支出", "利息收支"),
-        (("工资", "薪酬", "代发"), "2211.01", "应付职工薪酬-工资", "工资薪酬"),
-        (("社保", "养老", "医保"), "2211.02", "应付职工薪酬-社保", "社保款项"),
-        (("公积金",), "2211.03", "应付职工薪酬-公积金", "公积金款项"),
+        (("利息",), "560301", "财务费用-利息支出", "利息支出"),
+        (("工资", "薪酬", "代发"), "221101", "应付职工薪酬-工资", "工资薪酬"),
+        (("社保", "养老", "医保"), "221102", "应付职工薪酬-社保", "社保款项"),
+        (("公积金",), "221103", "应付职工薪酬-公积金", "公积金款项"),
         (("税", "税费", "国库"), "2221", "应交税费", "税费缴纳"),
-        (("办公", "文具", "打印", "耗材"), "5602.02", "管理费用-办公费", "办公支出"),
-        (("餐", "饭", "招待", "宴请"), "5602.05", "管理费用-业务招待费", "餐饮招待"),
-        (("差旅", "住宿", "酒店", "机票", "火车", "打车"), "5602.04", "管理费用-差旅费", "差旅出行"),
-        (("加油", "停车", "etc", "过路"), "5602.03", "管理费用-交通费", "交通车辆"),
-        (("租金", "房租", "租赁"), "5602.08", "管理费用-租赁费", "租赁支出"),
-        (("软件", "平台", "技术服务", "saas"), "5602.11", "管理费用-软件服务费", "软件技术服务"),
-        (("咨询", "审计", "律师", "代理记账", "知识产权"), "5602.10", "管理费用-中介咨询费", "专业服务"),
+        (("办公", "文具", "打印", "耗材"), "560202", "管理费用-办公费", "办公支出"),
+        (("餐", "饮", "招待", "宴请"), "560205", "管理费用-业务招待费", "餐饮招待"),
+        (("差旅", "住宿", "酒店", "机票", "火车", "打车"), "560204", "管理费用-差旅费", "差旅出行"),
+        (("加油", "停车", "etc", "过路"), "560203", "管理费用-交通费", "交通车辆"),
+        (("租金", "房租", "租赁"), "560208", "管理费用-租赁费", "租赁支出"),
+        (("软件", "平台", "技术服务", "saas"), "560211", "管理费用-软件服务费", "软件技术服务"),
+        (("咨询", "审计", "律师", "代理记账", "知识产权"), "560210", "管理费用-中介咨询费", "专业服务"),
     ]
     for keywords, code, name, reason in rules:
         if any(keyword in text for keyword in keywords):
             return code, name, reason
     party = _clean_party_name(counterparty)
-    subject_name = f"应付账款_{party}" if party else "应付账款"
-    return "2202", subject_name, "银行付款默认冲应付账款，需人工复核"
-
+    return "2202", f"应付账款_{party}" if party else "应付账款", "银行付款"
 
 def _detect_columns(rows: list[list[Any]]) -> dict[str, int | None]:
     """Detect column positions by scanning first 10 rows for headers and typed values."""
@@ -625,7 +625,7 @@ def _spreadsheet_rows(path: Path) -> tuple[str, list[list[Any]]]:
     rows: list[list[Any]] = []
     try:
         for ws in wb.worksheets:
-            rows.append([f"工作表 {ws.title}"])
+            rows.append([f"宸ヤ綔琛?{ws.title}"])
             for row in ws.iter_rows(max_row=500, values_only=True):
                 if any(cell not in (None, "") for cell in row):
                     rows.append(list(row))
@@ -666,13 +666,171 @@ def _extract_spreadsheet(path: Path) -> tuple[str, list[dict[str, Any]]]:
     rows: list[list[Any]] = []
     try:
         for ws in wb.worksheets:
-            rows.append([f"工作表: {ws.title}"])
+            rows.append([f"宸ヤ綔琛? {ws.title}"])
             for row in ws.iter_rows(max_row=500, values_only=True):
                 if any(cell not in (None, "") for cell in row):
                     rows.append(list(row))
     finally:
         wb.close()
     return _rows_to_text(rows), _parse_transaction_rows(rows)
+
+
+def _guess_subject(
+    summary: str | None,
+    counterparty: str | None,
+    is_income: bool,
+) -> tuple[str, str, str]:
+    text = f"{summary or ""} {counterparty or ""}".lower()
+    if _is_bank_fee(text):
+        return "560301", "财务费用-手续费", "手续费"
+    if any(keyword in text for keyword in ("还款", "往来款", "借款", "归还", "代垫", "备用金")):
+        party = _clean_party_name(counterparty)
+        return "2241", f"其他应付款_{party}" if party else "其他应付款", "往来款"
+    if any(keyword in text for keyword in ("贷款", "银行借款", "借款本金")):
+        return "2001", "短期借款", "银行贷款"
+    if is_income:
+        if any(keyword in text for keyword in ("利息", "结息")):
+            return "560303", "财务费用-利息收入", "利息收入"
+        party = _clean_party_name(counterparty)
+        return "1122", f"应收账款_{party}" if party else "应收账款", "银行收款"
+    rules = [
+        (("利息",), "560301", "财务费用-利息支出", "利息支出"),
+        (("工资", "薪酬", "代发"), "221101", "应付职工薪酬-工资", "工资薪酬"),
+        (("社保", "养老", "医保"), "221102", "应付职工薪酬-社保", "社保款项"),
+        (("公积金",), "221103", "应付职工薪酬-公积金", "公积金款项"),
+        (("税", "税费", "国库"), "2221", "应交税费", "税费缴纳"),
+        (("办公", "文具", "打印", "耗材"), "560202", "管理费用-办公费", "办公支出"),
+        (("餐", "饮", "招待", "宴请"), "560205", "管理费用-业务招待费", "餐饮招待"),
+        (("差旅", "住宿", "酒店", "机票", "火车", "打车"), "560204", "管理费用-差旅费", "差旅出行"),
+        (("加油", "停车", "etc", "过路"), "560203", "管理费用-交通费", "交通车辆"),
+        (("租金", "房租", "租赁"), "560208", "管理费用-租赁费", "租赁支出"),
+        (("软件", "平台", "技术服务", "saas"), "560211", "管理费用-软件服务费", "软件技术服务"),
+        (("咨询", "审计", "律师", "代理记账", "知识产权"), "560210", "管理费用-中介咨询费", "专业服务"),
+    ]
+    for keywords, code, name, reason in rules:
+        if any(keyword in text for keyword in keywords):
+            return code, name, reason
+    party = _clean_party_name(counterparty)
+    return "2202", f"应付账款_{party}" if party else "应付账款", "银行付款"
+
+def _detect_columns(rows: list[list[Any]]) -> dict[str, int | None]:
+    """Detect bank statement columns with readable Chinese/English headers."""
+    col_map: dict[str, int | None] = {
+        "date": None,
+        "desc": None,
+        "income": None,
+        "expense": None,
+        "balance": None,
+        "counterparty": None,
+        "account": None,
+    }
+    header_keywords = {
+        "date": ("日期", "交易时间", "交易日期", "记账日期", "入账日期", "date", "时间"),
+        "desc": ("摘要", "用途", "说明", "交易说明", "备注", "附言", "desc", "memo", "交易摘要"),
+        "income": ("收入", "贷方", "存入", "收方", "收款", "转入", "credit", "收入金额", "贷方金额"),
+        "expense": ("支出", "借方", "取出", "付方", "付款", "转出", "debit", "支出金额", "借方金额"),
+        "balance": ("余额", "账户余额", "当前余额", "balance"),
+        "counterparty": ("对方", "户名", "名称", "counterparty", "对方户名", "对方名称", "交易对方", "收款人", "付款人"),
+        "account": ("账号", "账户", "对方账号", "对方账户", "卡号", "account"),
+    }
+
+    for row in rows[:10]:
+        for index, cell in enumerate(row):
+            text = str(cell or "").strip().lower().replace(" ", "").replace("\n", "")
+            if not text:
+                continue
+            for key, keywords in header_keywords.items():
+                if col_map[key] is None and any(keyword in text for keyword in keywords):
+                    col_map[key] = index
+        if col_map["date"] is not None and (col_map["income"] is not None or col_map["expense"] is not None):
+            break
+
+    for row in rows[:80]:
+        if (
+            len(row) >= 8
+            and _to_date(row[0])
+            and _looks_like_time(row[1])
+            and (_to_float(row[2]) is not None or _to_float(row[3]) is not None)
+            and _to_float(row[4]) is not None
+        ):
+            col_map.update({
+                "date": 0,
+                "expense": 2,
+                "income": 3,
+                "balance": 4,
+                "account": 5,
+                "counterparty": 6,
+                "desc": 7,
+            })
+            return col_map
+
+    if col_map["date"] is None or (col_map["income"] is None and col_map["expense"] is None):
+        for row in rows[:50]:
+            if not row or len(row) < 4:
+                continue
+            for index, cell in enumerate(row):
+                if col_map["date"] is None and _to_date(cell):
+                    col_map["date"] = index
+                elif _to_float(cell) is not None:
+                    if col_map["expense"] is None:
+                        col_map["expense"] = index
+                    elif col_map["income"] is None and index != col_map["expense"]:
+                        col_map["income"] = index
+            if col_map["date"] is not None and (col_map["income"] is not None or col_map["expense"] is not None):
+                break
+
+    col_map["date"] = col_map["date"] if col_map["date"] is not None else 0
+    col_map["desc"] = col_map["desc"] if col_map["desc"] is not None else 1
+    col_map["expense"] = col_map["expense"] if col_map["expense"] is not None else 2
+    col_map["income"] = col_map["income"] if col_map["income"] is not None else 3
+    col_map["balance"] = col_map["balance"] if col_map["balance"] is not None else 4
+    return col_map
+
+
+def _spreadsheet_rows(path: Path) -> tuple[str, list[list[Any]]]:
+    """Read CSV, ODS, legacy XLS, and modern Excel rows."""
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        raw = path.read_bytes()
+        for enc in ("utf-8-sig", "gbk", "utf-8"):
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            text = raw.decode("utf-8", errors="ignore")
+        rows = list(csv.reader(io.StringIO(text)))
+        return text, rows
+
+    if suffix == ".ods":
+        rows = _extract_ods_rows(path)
+        return _rows_to_text(rows), rows
+
+    if suffix == ".xls":
+        import xlrd
+
+        workbook = xlrd.open_workbook(str(path))
+        rows: list[list[Any]] = []
+        for sheet in workbook.sheets():
+            rows.append([f"宸ヤ綔琛?{sheet.name}"])
+            for row_index in range(min(sheet.nrows, 500)):
+                row = sheet.row_values(row_index)
+                if any(cell not in (None, "") for cell in row):
+                    rows.append(row)
+        return _rows_to_text(rows), rows
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    rows: list[list[Any]] = []
+    try:
+        for ws in wb.worksheets:
+            rows.append([f"宸ヤ綔琛?{ws.title}"])
+            for row in ws.iter_rows(max_row=500, values_only=True):
+                if any(cell not in (None, "") for cell in row):
+                    rows.append(list(row))
+    finally:
+        wb.close()
+    return _rows_to_text(rows), rows
 
 
 def _group_transactions_for_entries(
@@ -686,7 +844,7 @@ def _group_transactions_for_entries(
         if tx.entry_id or tx.status != "recognized":
             continue
         code = tx.suggested_subject_code or ("1122" if tx.income_amount else "2202")
-        name = tx.suggested_subject_name or ("应收账款" if tx.income_amount else "应付账款")
+        name = tx.suggested_subject_name or ("搴旀敹璐︽" if tx.income_amount else "搴斾粯璐︽")
         direction = "expense" if tx.expense_amount else "income"
         if direction == "income" and code.startswith("1122"):
             key = ("__bank_receipt__", "银行收款", direction)
@@ -702,64 +860,64 @@ def _group_transactions_for_entries(
         if total <= 0:
             continue
 
-        # Build merged summary: 银行X月手续费（N笔）
+        # Build merged summary: 银行X鏈堟墜缁垂锛圢绗旓級
         tx_dates = [_to_date(t.transaction_date) for t in txs if t.transaction_date]
         tx_dates = [d for d in tx_dates if d]
         first_date = min(tx_dates) if tx_dates else date.today()
         last_date = max(tx_dates) if tx_dates else date.today()
         month_str = f"{first_date.month}月" if first_date.month == last_date.month else f"{first_date.month}-{last_date.month}月"
-        bank_code, bank_name = "100201", "银行存款_基本户"
+        bank_code, bank_name = BANK_ACCOUNT_CODE, BANK_ACCOUNT_NAME
 
         if code == "__bank_receipt__":
             summary = "银行收款"
             counterparty_totals: dict[tuple[str, str], float] = defaultdict(float)
             for tx in txs:
                 line_code = tx.suggested_subject_code or "1122"
-                line_name = tx.suggested_subject_name or "应收账款"
+                line_name = tx.suggested_subject_name or "搴旀敹璐︽"
                 counterparty_totals[(line_code, line_name)] += float(tx.income_amount or 0)
             lines = [
                 EntryLineCreate(line_number=1, account_code=bank_code, account_name=bank_name,
-                                direction="debit", amount=round(total, 2),
+                                direction="debit", debitAmount=round(total, 2), creditAmount=0,
                                 summary_detail=summary),
             ]
             for index, ((line_code, line_name), amount) in enumerate(counterparty_totals.items(), start=2):
                 lines.append(EntryLineCreate(line_number=index, account_code=line_code, account_name=line_name,
-                                             direction="credit", amount=round(amount, 2),
+                                             direction="credit", debitAmount=0, creditAmount=round(amount, 2),
                                              summary_detail=summary))
         elif code == "__bank_payment__":
             summary = "银行付款"
             counterparty_totals: dict[tuple[str, str], float] = defaultdict(float)
             for tx in txs:
                 line_code = tx.suggested_subject_code or "2202"
-                line_name = tx.suggested_subject_name or "应付账款"
+                line_name = tx.suggested_subject_name or "搴斾粯璐︽"
                 counterparty_totals[(line_code, line_name)] += float(tx.expense_amount or 0)
             lines = [
                 EntryLineCreate(line_number=index, account_code=line_code, account_name=line_name,
-                                direction="debit", amount=round(amount, 2),
+                                direction="debit", debitAmount=round(amount, 2), creditAmount=0,
                                 summary_detail=summary)
                 for index, ((line_code, line_name), amount) in enumerate(counterparty_totals.items(), start=1)
             ]
             lines.append(EntryLineCreate(line_number=len(lines) + 1, account_code=bank_code, account_name=bank_name,
-                                         direction="credit", amount=round(total, 2),
+                                         direction="credit", debitAmount=0, creditAmount=round(total, 2),
                                          summary_detail=summary))
         elif direction == "expense":
-            summary = "手续费" if code.startswith("5603.02") else f"{name}（{month_str}，{len(txs)}笔）"
+            summary = "手续费" if code.startswith(("5603.02", "560301")) else f"{name}（{month_str}，{len(txs)}笔）"
             lines = [
                 EntryLineCreate(line_number=1, account_code=code, account_name=name,
-                                direction="debit", amount=round(total, 2),
+                                direction="debit", debitAmount=round(total, 2), creditAmount=0,
                                 summary_detail=summary),
                 EntryLineCreate(line_number=2, account_code=bank_code, account_name=bank_name,
-                                direction="credit", amount=round(total, 2),
+                                direction="credit", debitAmount=0, creditAmount=round(total, 2),
                                 summary_detail=summary),
             ]
         else:
             summary = "结息" if code.startswith("5603.03") else f"{name}（{month_str}，{len(txs)}笔）"
             lines = [
                 EntryLineCreate(line_number=1, account_code=bank_code, account_name=bank_name,
-                                direction="debit", amount=round(total, 2),
+                                direction="debit", debitAmount=round(total, 2), creditAmount=0,
                                 summary_detail=summary),
                 EntryLineCreate(line_number=2, account_code=code, account_name=name,
-                                direction="credit", amount=round(total, 2),
+                                direction="credit", debitAmount=0, creditAmount=round(total, 2),
                                 summary_detail=summary),
             ]
 
@@ -785,89 +943,17 @@ def _transaction_to_entry(
     if amount <= 0:
         return None
 
-    bank_code = "100201"
-    bank_name = "银行存款_基本户"
-    if tx.income_amount:
-        subject_code = tx.suggested_subject_code or "1122"
-        subject_name = tx.suggested_subject_name or "应收账款"
-        summary = "银行收款" if subject_code.startswith("1122") else (tx.summary or "银行收款")
-    else:
-        subject_code = tx.suggested_subject_code or "2202"
-        subject_name = tx.suggested_subject_name or "应付账款"
-        if subject_code.startswith("2202"):
-            summary = "银行付款"
-        elif subject_code.startswith("5603.02"):
-            summary = "手续费"
-        else:
-            summary = tx.summary or "银行付款"
-
-    if tx.expense_amount:
-        lines = [
-            EntryLineCreate(
-                line_number=1,
-                account_code=subject_code,
-                account_name=subject_name,
-                direction="debit",
-                amount=round(amount, 2),
-                summary_detail=summary,
-            ),
-            EntryLineCreate(
-                line_number=2,
-                account_code=bank_code,
-                account_name=bank_name,
-                direction="credit",
-                amount=round(amount, 2),
-                summary_detail=summary,
-            ),
-        ]
-    else:
-        lines = [
-            EntryLineCreate(
-                line_number=1,
-                account_code=bank_code,
-                account_name=bank_name,
-                direction="debit",
-                amount=round(amount, 2),
-                summary_detail=summary,
-            ),
-            EntryLineCreate(
-                line_number=2,
-                account_code=subject_code,
-                account_name=subject_name,
-                direction="credit",
-                amount=round(amount, 2),
-                summary_detail=summary,
-            ),
-        ]
-
-    return EntryCreate(
-        client_id=tx.client_id,
-        voucher_date=tx.transaction_date or date.today(),
-        voucher_type=voucher_type,
-        summary=summary[:500],
-        lines=lines,
-    )
-
-
-def _transaction_to_entry(
-    tx: BankStatementTransaction,
-    voucher_type: str = "记",
-) -> EntryCreate | None:
-    amount = float(tx.expense_amount or tx.income_amount or 0)
-    if amount <= 0:
-        return None
-
     counterparty_name = _tx_counterparty(tx)
     counterparty_account = (tx.account_number or "").strip() or None
     is_income = bool(tx.income_amount)
 
     if is_income:
         subject_code = tx.suggested_subject_code or "1122"
-        subject_name = normalize_account_name(tx.suggested_subject_name or "应收账款", counterparty_name, subject_code)
+        subject_name = normalize_account_name(tx.suggested_subject_name or "搴旀敹璐︽", counterparty_name, subject_code)
         summary = tx.summary or "银行收款"
     else:
         subject_code = tx.suggested_subject_code or "2202"
-        subject_name = normalize_account_name(tx.suggested_subject_name or "应付账款", counterparty_name, subject_code)
+        subject_name = normalize_account_name(tx.suggested_subject_name or "搴斾粯璐︽", counterparty_name, subject_code)
         summary = tx.summary or "银行付款"
         if _is_bank_fee(tx.summary) or subject_code.startswith(("5603.02", "560301")):
             subject_code = "560301"
@@ -908,14 +994,16 @@ def _transaction_to_entry(
             EntryLineCreate(
                 line_number=1,
                 direction="debit",
-                amount=round(amount, 2),
+                debitAmount=round(amount, 2),
+                creditAmount=0,
                 summary_detail=summary,
                 **subject_line_fields,
             ),
             EntryLineCreate(
                 line_number=2,
                 direction="credit",
-                amount=round(amount, 2),
+                debitAmount=0,
+                creditAmount=round(amount, 2),
                 summary_detail=summary,
                 **bank_line_fields,
             ),
@@ -925,14 +1013,16 @@ def _transaction_to_entry(
             EntryLineCreate(
                 line_number=1,
                 direction="debit",
-                amount=round(amount, 2),
+                debitAmount=round(amount, 2),
+                creditAmount=0,
                 summary_detail=summary,
                 **bank_line_fields,
             ),
             EntryLineCreate(
                 line_number=2,
                 direction="credit",
-                amount=round(amount, 2),
+                debitAmount=0,
+                creditAmount=round(amount, 2),
                 summary_detail=summary,
                 **subject_line_fields,
             ),
@@ -988,6 +1078,7 @@ async def upload_and_extract(
     file: UploadFile,
     client_id: str,
     auto_generate: bool = False,
+    merge_similar: bool = True,
 ) -> tuple[BankStatementUpload, list[str]]:
     upload_id = str(uuid.uuid4())
     original_filename = file.filename or "bank-statement.xlsx"
@@ -1053,7 +1144,7 @@ async def upload_and_extract(
         transactions = result.get("transactions") or local_transactions
         if not transactions:
             upload.status = "failed"
-            upload.error_msg = "未识别到银行流水明细"
+            upload.error_msg = "鏈瘑鍒埌银行娴佹按鏄庣粏"
             await db.flush()
             return await get_upload(db, upload.id), []
 
@@ -1084,7 +1175,7 @@ async def upload_and_extract(
                 subject_reason=item.get("subject_reason"),
                 confidence=_to_float(item.get("confidence")),
                 status="recognized" if (income or expense) else "failed",
-                error_msg=None if (income or expense) else "未识别到交易金额",
+                error_msg=None if (income or expense) else "鏈瘑鍒埌浜ゆ槗閲戦",
                 raw_data=item,
             )
             if income or expense:
@@ -1126,12 +1217,19 @@ async def upload_and_extract(
     entry_ids: list[str] = []
     upload = await get_upload(db, upload.id)
     if auto_generate:
+        consumed_ids: set[str] = set()
+        if merge_similar:
+            merged_ids, consumed_ids = await _create_merged_fee_entries(db, list(upload.transactions))
+            entry_ids.extend(merged_ids)
         for tx in upload.transactions:
+            if tx.id in consumed_ids:
+                continue
             if tx.status == "recognized" and not tx.entry_id:
                 entry_data = await _transaction_to_entry_with_subject(db, tx)
                 if entry_data:
                     entry = await create_entry(db, entry_data)
                     tx.entry_id = entry.id
+                    tx.status = "voucher_created"
                     entry_ids.append(entry.id)
         await db.flush()
         upload = await get_upload(db, upload.id)
@@ -1245,7 +1343,7 @@ async def update_transaction_template_selection(
         tx.selected_template_id = recommendation.template_id
         tx.template_match_reason = recommendation.reason
     else:
-        tx.template_match_reason = "人工选择模板"
+        tx.template_match_reason = "浜哄伐閫夋嫨妯℃澘"
     await db.flush()
     return tx
 
@@ -1265,13 +1363,109 @@ async def generate_entry_for_transaction(
         raise ValueError("该流水无法生成凭证")
     entry = await create_entry(db, entry_data)
     tx.entry_id = entry.id
+    tx.status = "voucher_created"
     await db.flush()
     return entry.id
+
+
+def _fee_merge_key(tx: BankStatementTransaction) -> tuple | None:
+    if tx.entry_id or tx.status != "recognized":
+        return None
+    if not tx.transaction_date or not tx.expense_amount:
+        return None
+    if tx.manual_account_override and (tx.selected_account_code or tx.suggested_subject_code) not in {"560301", "5603.02"}:
+        return None
+    business_type = (tx.business_type or "").strip()
+    subject_code = (tx.selected_account_code or tx.suggested_subject_code or "").strip()
+    if business_type != "手续费" and not _is_bank_fee(tx.summary) and subject_code not in {"560301", "5603.02"}:
+        return None
+    if subject_code and subject_code not in {"560301", "5603.02"}:
+        return None
+    # Use a fixed bank account key for fee merging — fees always debit 560301,
+    # credit the same bank account (100201). Different account_number values
+    # across rows (e.g. empty vs "622202...") should NOT prevent grouping.
+    return (
+        tx.client_id,
+        tx.transaction_date.isoformat(),
+        "fee_merged",
+        "手续费",
+        "560301",
+        "100201",
+        "CNY",
+    )
+
+
+async def _create_merged_fee_entries(
+    db: AsyncSession,
+    transactions: list[BankStatementTransaction],
+) -> tuple[list[str], set[str]]:
+    from collections import defaultdict
+
+    groups: dict[tuple, list[BankStatementTransaction]] = defaultdict(list)
+    for tx in transactions:
+        key = _fee_merge_key(tx)
+        if key:
+            groups[key].append(tx)
+
+    entry_ids: list[str] = []
+    consumed_ids: set[str] = set()
+    for txs in groups.values():
+        if len(txs) < 2:
+            continue
+        total = round(sum(float(tx.expense_amount or 0) for tx in txs), 2)
+        if total <= 0:
+            continue
+        source_row_ids = [tx.id for tx in txs]
+        n_tx = len(txs)
+        month_str = f"{txs[0].transaction_date.month}月" if txs[0].transaction_date else ""
+        entry_data = EntryCreate(
+            client_id=txs[0].client_id,
+            voucher_date=txs[0].transaction_date or date.today(),
+            voucher_type="记",
+            summary=f"手续费（{month_str}，{n_tx}笔）" if month_str else f"手续费（{n_tx}笔）",
+            sourceRowIds=source_row_ids,
+            lines=[
+                EntryLineCreate(
+                    line_number=1,
+                    account_code="560301",
+                    account_name="财务费用-手续费",
+                    account_full_name="财务费用-手续费",
+                    direction="debit",
+                    debitAmount=total,
+                    creditAmount=0,
+                    summary_detail=f"手续费（{n_tx}笔）",
+                    source_type="bank_statement",
+                    source_document_id=txs[0].upload_id,
+                ),
+                EntryLineCreate(
+                    line_number=2,
+                    account_code=BANK_ACCOUNT_CODE,
+                    account_name=BANK_ACCOUNT_NAME,
+                    account_full_name=BANK_ACCOUNT_NAME,
+                    auxiliary_type="bank_account",
+                    auxiliary_name=BANK_ACCOUNT_AUX,
+                    direction="credit",
+                    debitAmount=0,
+                    creditAmount=total,
+                    summary_detail=f"手续费（{n_tx}笔）",
+                    source_type="bank_statement",
+                    source_document_id=txs[0].upload_id,
+                ),
+            ],
+        )
+        entry = await create_entry(db, entry_data)
+        for tx in txs:
+            tx.entry_id = entry.id
+            tx.status = "voucher_created"
+            consumed_ids.add(tx.id)
+        entry_ids.append(entry.id)
+    return entry_ids, consumed_ids
 
 
 async def generate_entries_for_client(
     db: AsyncSession,
     client_id: str,
+    merge_similar: bool = True,
 ) -> list[str]:
     stmt = (
         select(BankStatementTransaction)
@@ -1297,12 +1491,20 @@ async def generate_entries_for_client(
             tx.entry_id = None
 
     entry_ids: list[str] = []
+    consumed_ids: set[str] = set()
+    if merge_similar:
+        merged_ids, consumed_ids = await _create_merged_fee_entries(db, transactions)
+        entry_ids.extend(merged_ids)
+
     for tx in transactions:
+        if tx.id in consumed_ids:
+            continue
         if tx.status == "recognized" and not tx.entry_id:
             entry_data = await _transaction_to_entry_with_subject(db, tx)
             if entry_data:
                 entry = await create_entry(db, entry_data)
                 tx.entry_id = entry.id
+                tx.status = "voucher_created"
                 entry_ids.append(entry.id)
 
     await db.flush()
