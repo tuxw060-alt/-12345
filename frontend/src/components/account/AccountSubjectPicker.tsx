@@ -223,18 +223,11 @@ export default function AccountSubjectPicker({
           label: option.label,
           disabled: currentParentCodes.includes(option.value) || !option.isLeaf,
         }))}
-        optionRender={(option) => {
-          const item = options.find((candidate) => candidate.value === option.value)
-          return (
-            <div>
-              <strong>{item?.label || option.label}</strong>
-              <div style={{ color: '#8a9492', fontSize: 12 }}>
-                父级：{item?.parentCode ? `${item.parentCode} ${item.parentName || ''}` : '-'}
-                {!item?.isLeaf ? <Tag style={{ marginLeft: 8 }}>父级</Tag> : null}
-              </div>
-            </div>
-          )
-        }}
+        optionRender={(option) => (
+          <div style={{ lineHeight: 1.5 }}>
+            <span>{option.label}</span>
+          </div>
+        )}
       />
       <Tooltip title="新增明细科目">
         <Button icon={<PlusOutlined />} disabled={disabled} onClick={() => setModalOpen(true)} />

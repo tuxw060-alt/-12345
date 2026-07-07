@@ -45,26 +45,20 @@ function normalizeAccountName(name?: string | null, auxiliaryName?: string | nul
   return rawName
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 function formatVoucherAccountDisplay(line: JournalEntryLine) {
   const code = line.account_code || ''
-  const auxName = cleanText(line.auxiliary_name)
-  const derivedFullName = line.account_full_name
-    || (line.parent_account_name && line.account_name ? `${line.parent_account_name}_${line.account_name}` : line.account_name)
-  const pureName = line.parent_account_name ? cleanText(line.account_name) : normalizeAccountName(derivedFullName, auxName, code)
-
-  if (!code || !pureName) {
-    return { primaryText: '待选择科目', secondaryText: '请选择会计科目' }
+  if (!code || !line.account_name) {
+    return { primaryText: '待选择科目', secondaryText: '' }
   }
-
-  if (line.parent_account_name) {
-    return { primaryText: pureName, secondaryText: `${code} ${derivedFullName}` }
+  // Display: "编码 科目名称" once, no redundant repetition
+  return {
+    primaryText: `${code} ${line.account_full_name || line.account_name}`,
+    secondaryText: '',
   }
-
-  if (isReceivablePayableAccount(code) && auxName) {
-    return { primaryText: pureName, secondaryText: `${code} ${pureName}_${auxName}` }
-  }
-
-  return { primaryText: pureName, secondaryText: `${code} ${pureName}` }
 }
 
 function flattenSubjects(nodes: SubjectTreeNode[]): {
@@ -106,12 +100,16 @@ function validLineSummary(entry: JournalEntry, line: JournalEntryLine, index: nu
   return (index === 0 ? entry.summary : line.summary_detail || entry.summary).trim()
 }
 
+function lineAmount(line: JournalEntryLine) {
+  return normalizeAmountInput(line.direction === 'credit' ? line.creditAmount : line.debitAmount)
+}
+
 function lineHasContent(line: JournalEntryLine, entry: JournalEntry, index: number) {
   return Boolean(
     validLineSummary(entry, line, index)
     || line.account_code
     || line.account_name
-    || Number(line.amount) > 0,
+    || lineAmount(line) > 0,
   )
 }
 
@@ -137,15 +135,15 @@ function validateEntryBeforeConfirm(entry: JournalEntry) {
     if (requiresAuxiliaryName(line.account_code) && !cleanText(line.auxiliary_name)) {
       return `第 ${index + 1} 行往来科目缺少辅助核算名称`
     }
-    if (!line.direction || Number(line.amount) <= 0) return `第 ${index + 1} 行缺少借方或贷方金额`
+    if (!line.direction || lineAmount(line) <= 0) return `第 ${index + 1} 行缺少借方或贷方金额`
   }
 
   const debitTotal = entry.lines
     .filter((line) => line.direction === 'debit')
-    .reduce((sum, line) => sum + Number(line.amount || 0), 0)
+    .reduce((sum, line) => sum + normalizeAmountInput(line.debitAmount), 0)
   const creditTotal = entry.lines
     .filter((line) => line.direction === 'credit')
-    .reduce((sum, line) => sum + Number(line.amount || 0), 0)
+    .reduce((sum, line) => sum + normalizeAmountInput(line.creditAmount), 0)
 
   if (Math.max(debitTotal, creditTotal) <= 0) return '合计金额不能为 0'
   if (Math.abs(debitTotal - creditTotal) >= 0.01) return '借贷不平，不能确认凭证'
@@ -169,12 +167,12 @@ export default function EntryEditor() {
   const subjectOptions = useMemo(() => flattenSubjects(subjects), [subjects])
 
   const handleHeaderChange = (field: string, value: any) => {
-    if (!entry || entry.status === 'exported') return
+    if (!entry || entry.status !== 'draft') return
     setEntry({ ...entry, [field]: value })
   }
 
   const handleLineChange = (lineId: string, field: string, value: any) => {
-    if (!entry || entry.status === 'exported') return
+    if (!entry || entry.status !== 'draft') return
     setEntry({
       ...entry,
       lines: entry.lines.map((line) =>
@@ -184,19 +182,24 @@ export default function EntryEditor() {
   }
 
   const handleLineAmountChange = (lineId: string, direction: 'debit' | 'credit', value: number) => {
-    if (!entry || entry.status === 'exported') return
+    if (!entry || entry.status !== 'draft') return
     setEntry({
       ...entry,
       lines: entry.lines.map((line) =>
         line.id === lineId
-          ? { ...line, direction, amount: normalizeAmountInput(value) }
+          ? {
+              ...line,
+              direction,
+              debitAmount: direction === 'debit' ? normalizeAmountInput(value) : 0,
+              creditAmount: direction === 'credit' ? normalizeAmountInput(value) : 0,
+            }
           : line
       ),
     })
   }
 
   const addLine = () => {
-    if (!entry || entry.status === 'exported') return
+    if (!entry || entry.status !== 'draft') return
     const maxNum = entry.lines.reduce((max, line) => Math.max(max, line.line_number), 0)
     const newLine: JournalEntryLine = {
       id: `new_${Date.now()}`,
@@ -205,7 +208,8 @@ export default function EntryEditor() {
       account_code: '',
       account_name: '',
       direction: 'debit',
-      amount: 0,
+      debitAmount: 0,
+      creditAmount: 0,
       summary_detail: '',
       account_full_name: null,
       parent_account_code: null,
@@ -225,7 +229,7 @@ export default function EntryEditor() {
   }
 
   const removeLine = (lineId: string) => {
-    if (!entry || entry.status === 'exported') return
+    if (!entry || entry.status !== 'draft') return
     if (entry.lines.length <= 2) {
       message.warning('凭证至少保留 2 行分录')
       return
@@ -234,7 +238,7 @@ export default function EntryEditor() {
   }
 
   const handleSave = async () => {
-    if (!entry || !id || entry.status === 'exported') return
+    if (!entry || !id || entry.status !== 'draft') return
     setSaving(true)
     try {
       await updateEntry(id, {
@@ -247,7 +251,8 @@ export default function EntryEditor() {
           account_code: line.account_code,
           account_name: line.parent_account_name ? line.account_name : normalizeAccountName(line.account_name, line.auxiliary_name, line.account_code),
           direction: line.direction,
-          amount: normalizeAmountInput(line.amount),
+          debitAmount: normalizeAmountInput(line.debitAmount),
+          creditAmount: normalizeAmountInput(line.creditAmount),
           summary_detail: line.summary_detail ?? undefined,
           account_full_name: line.account_full_name
             || (line.parent_account_name && line.account_name
@@ -277,7 +282,7 @@ export default function EntryEditor() {
   }
 
   const handleConfirm = async () => {
-    if (!entry || !id || entry.status === 'exported') return
+    if (!entry || !id || entry.status !== 'draft') return
     const validationError = validateEntryBeforeConfirm(entry)
     if (validationError) {
       message.error(validationError)
@@ -296,19 +301,19 @@ export default function EntryEditor() {
 
   if (!entry) return <Typography.Text type="danger">凭证不存在</Typography.Text>
 
-  const readonly = entry.status === 'exported'
+  const readonly = entry.status !== 'draft'
   const debitTotal = entry.lines
     .filter((line) => line.direction === 'debit')
-    .reduce((sum, line) => sum + Number(line.amount || 0), 0)
+    .reduce((sum, line) => sum + normalizeAmountInput(line.debitAmount), 0)
   const creditTotal = entry.lines
     .filter((line) => line.direction === 'credit')
-    .reduce((sum, line) => sum + Number(line.amount || 0), 0)
+    .reduce((sum, line) => sum + normalizeAmountInput(line.creditAmount), 0)
   const balanced = Math.abs(debitTotal - creditTotal) < 0.01
   const totalAmount = Math.max(debitTotal, creditTotal)
   const statusMap = {
     draft: { color: 'blue', text: '草稿' },
     confirmed: { color: 'green', text: '已确认' },
-    exported: { color: 'default', text: '已导出' },
+    voided: { color: 'default', text: '已作废' },
   } as const
   const status = statusMap[entry.status] || statusMap.draft
   const visibleLineCount = Math.max(entry.lines.length, 5)
@@ -422,47 +427,51 @@ export default function EntryEditor() {
               </div>
 
               <div className="voucher-cell voucher-subject-cell">
-                <AccountSubjectPicker
-                  value={line.account_code}
-                  subjects={subjects}
-                  clientId={currentClient?.id}
-                  counterpartyName={line.counterparty_name}
-                  auxiliaryName={line.auxiliary_name}
-                  manualOverride={line.manual_account_override}
-                  disabled={readonly}
-                  onCreated={() => getSubjectTree(currentClient?.id).then(setSubjects)}
-                  onApply={(account) => {
-                    setEntry((prev) => prev ? {
-                      ...prev,
-                      lines: prev.lines.map((currentLine) => currentLine.id === line.id
-                        ? {
-                            ...currentLine,
-                            account_code: account.account_code,
-                            account_name: account.account_name,
-                            account_full_name: account.account_full_name,
-                            parent_account_code: account.parent_account_code,
-                            parent_account_name: account.parent_account_name,
-                            auxiliary_name: account.auxiliary_name || currentLine.auxiliary_name,
-                            auxiliary_code: account.auxiliary_code || currentLine.auxiliary_code,
-                            manual_account_override: account.manual_account_override,
-                            account_selection_source: account.account_selection_source,
-                          }
-                        : currentLine),
-                    } : prev)
-                  }}
-                />
+                {!readonly && (
+                  <div className="voucher-subject-picker">
+                    <AccountSubjectPicker
+                      value={line.account_code}
+                      subjects={subjects}
+                      clientId={currentClient?.id}
+                      counterpartyName={line.counterparty_name}
+                      auxiliaryName={line.auxiliary_name}
+                      manualOverride={line.manual_account_override}
+                      disabled={readonly}
+                      onCreated={() => getSubjectTree(currentClient?.id).then(setSubjects)}
+                      onApply={(account) => {
+                        setEntry((prev) => prev ? {
+                          ...prev,
+                          lines: prev.lines.map((currentLine) => currentLine.id === line.id
+                            ? {
+                                ...currentLine,
+                                account_code: account.account_code,
+                                account_name: account.account_name,
+                                account_full_name: account.account_full_name,
+                                parent_account_code: account.parent_account_code,
+                                parent_account_name: account.parent_account_name,
+                                auxiliary_name: account.auxiliary_name || currentLine.auxiliary_name,
+                                auxiliary_code: account.auxiliary_code || currentLine.auxiliary_code,
+                                manual_account_override: account.manual_account_override,
+                                account_selection_source: account.account_selection_source,
+                              }
+                            : currentLine),
+                        } : prev)
+                      }}
+                    />
+                  </div>
+                )}
                 <span className="voucher-subject-text">
                   <strong>
                     {formatVoucherAccountDisplay(line).primaryText}
                     {line.manual_account_override && <Tag color="gold" className="voucher-manual-tag">手动</Tag>}
                   </strong>
-                  <small>{formatVoucherAccountDisplay(line).secondaryText}</small>
+                  {formatVoucherAccountDisplay(line).secondaryText && <small>{formatVoucherAccountDisplay(line).secondaryText}</small>}
                 </span>
               </div>
 
               <div className="voucher-cell voucher-amount-cell">
                 <MoneyGrid
-                  amount={line.direction === 'debit' ? Number(line.amount) : 0}
+                  amount={line.debitAmount}
                   side="debit"
                   readonly={readonly}
                   onChange={(amount) => handleLineAmountChange(line.id, 'debit', amount)}
@@ -470,7 +479,7 @@ export default function EntryEditor() {
               </div>
               <div className="voucher-cell voucher-amount-cell">
                 <MoneyGrid
-                  amount={line.direction === 'credit' ? Number(line.amount) : 0}
+                  amount={line.creditAmount}
                   side="credit"
                   readonly={readonly}
                   onChange={(amount) => handleLineAmountChange(line.id, 'credit', amount)}

@@ -318,19 +318,54 @@ def map_bank_statement_columns(headers: list[Any]) -> dict[str, Any]:
 
 
 def _to_float(value: Any) -> float | None:
+    """Parse monetary value from cell, handling mixed formats.
+
+    Handles: "1,234.56", "¥12.00", " -8.00 ", "￥100.50", "1,000",
+             "(100.00)", negative signs, whitespace, and currency symbols.
+    """
     if value in (None, ""):
         return None
     if isinstance(value, (int, float)):
+        if isinstance(value, float) and not _is_finite_float(value):
+            return None
         return float(value)
     if _looks_like_time(value):
         return None
-    text = re.sub(r"[^\d.\-]", "", str(value).replace(",", "")).strip()
-    if not text:
+    text = str(value).strip()
+    # Detect parenthesized negative: "(100.00)" -> -100.00
+    negative = False
+    if text.startswith("(") and text.endswith(")"):
+        negative = True
+        text = text[1:-1]
+    # Remove currency symbols and spacing
+    text = re.sub(r"[¥￥$€£\s]", "", text)
+    # Remove thousands separators but keep decimal point and minus sign
+    text = text.replace(",", "")
+    # Detect trailing minus or leading minus
+    if text.endswith("-"):
+        negative = True
+        text = text[:-1]
+    if text.startswith("-"):
+        negative = True
+        text = text[1:]
+    # Keep only digits and decimal point
+    text = re.sub(r"[^\d.]", "", text)
+    if not text or text == ".":
         return None
     try:
-        return float(text)
+        result = float(text)
     except ValueError:
         return None
+    if negative:
+        result = -result
+    if not _is_finite_float(result):
+        return None
+    return result
+
+
+def _is_finite_float(value: float) -> bool:
+    import math
+    return math.isfinite(value)
 
 
 def _looks_like_time(value: Any) -> bool:
@@ -1369,6 +1404,11 @@ async def generate_entry_for_transaction(
 
 
 def _fee_merge_key(tx: BankStatementTransaction) -> tuple | None:
+    """Return a merge key for fee transactions.
+
+    Requires a reliable serial number to merge. Without it, each fee row stays
+    independent — identical amounts alone do NOT justify merging.
+    """
     if tx.entry_id or tx.status != "recognized":
         return None
     if not tx.transaction_date or not tx.expense_amount:
@@ -1381,13 +1421,16 @@ def _fee_merge_key(tx: BankStatementTransaction) -> tuple | None:
         return None
     if subject_code and subject_code not in {"560301", "5603.02"}:
         return None
-    # Use a fixed bank account key for fee merging — fees always debit 560301,
-    # credit the same bank account (100201). Different account_number values
-    # across rows (e.g. empty vs "622202...") should NOT prevent grouping.
+    # Require serial number to merge — without it, don't merge.
+    serial = (_raw_value(tx, "serial_no") or _raw_value(tx, "流水号") or "").strip()
+    if not serial:
+        return None
+    counterparty = (tx.counterparty or "").strip()
     return (
         tx.client_id,
         tx.transaction_date.isoformat(),
-        "fee_merged",
+        counterparty,
+        serial,
         "手续费",
         "560301",
         "100201",
